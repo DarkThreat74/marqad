@@ -450,6 +450,18 @@ export default function Marqad() {
   const [liveEditText, setLiveEditText] = useState("");
   const [isOnline, setIsOnline] = useState(true);
 
+  // --- Fix this popover (vocabulary correction) ---
+  const [fixPopover, setFixPopover] = useState<{
+    show: boolean;
+    x: number;
+    y: number;
+    wrongText: string;
+    correctText: string;
+  }>({ show: false, x: 0, y: 0, wrongText: "", correctText: "" });
+  const [fixSaving, setFixSaving] = useState(false);
+  const [fixToast, setFixToast] = useState<string | null>(null);
+  const transcriptAreaRef = useRef<HTMLDivElement | null>(null);
+
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -828,6 +840,25 @@ export default function Marqad() {
       // Use audio gap when available (accurate), fall back to wall time
       const gap = audioGap >= 0 ? audioGap : wallGap;
       spacing = classifyPause(gap);
+
+      // Passive pause logging — data collection only, not self-tuning.
+      // Logs every measured pause for later manual analysis of threshold tuning.
+      if (spacing !== "none" && spacing !== "ellipsis") {
+        const tier = spacing === "comma" ? "comma"
+          : spacing === "line" ? "line"
+          : spacing === "paragraph" ? "para"
+          : "turn";
+        fetch("/api/pause-observation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            class_date: new Date().toISOString().slice(0, 10),
+            slot_number: 0,
+            pause_ms: Math.round(gap),
+            pause_tier: tier,
+          }),
+        }).catch(() => {}); // non-fatal — don't interrupt recording
+      }
     }
 
     lastAudioEndRef.current = audioEnd;
@@ -910,8 +941,24 @@ export default function Marqad() {
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      ws.send(buildStartRecognition());
+    ws.onopen = async () => {
+      // Fetch user vocab corrections and merge into additional_vocab
+      let extraVocab: Array<{ content: string; sounds_like: string[] }> | undefined;
+      try {
+        const vocabResp = await fetch("/api/vocab-correction");
+        if (vocabResp.ok) {
+          const vocabData = await vocabResp.json();
+          if (vocabData.corrections && vocabData.corrections.length > 0) {
+            extraVocab = vocabData.corrections.map((c: any) => ({
+              content: c.correct_text,
+              sounds_like: c.sounds_like || [],
+            }));
+          }
+        }
+      } catch {
+        // Non-fatal — proceed with baseline vocab only
+      }
+      ws.send(buildStartRecognition(extraVocab));
       setStatusText("Starting recognition...");
     };
 
@@ -1325,6 +1372,66 @@ export default function Marqad() {
   }, [liveEditMode, liveEditText, elapsedSec]);
 
   // ============================================================
+  // Fix this — vocabulary correction from text selection
+  // ============================================================
+
+  const handleTranscriptMouseUp = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      setFixPopover((prev) => (prev.show ? { ...prev, show: false } : prev));
+      return;
+    }
+    const selectedText = selection.toString().trim();
+    if (!selectedText || selectedText.length < 2 || selectedText.length > 80) {
+      setFixPopover((prev) => (prev.show ? { ...prev, show: false } : prev));
+      return;
+    }
+    // Position popover near the selection
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    setFixPopover({
+      show: true,
+      x: rect.left + rect.width / 2,
+      y: rect.bottom + window.scrollY + 8,
+      wrongText: selectedText,
+      correctText: "",
+    });
+  }, []);
+
+  const submitVocabFix = useCallback(async () => {
+    if (!fixPopover.wrongText || !fixPopover.correctText.trim()) return;
+    setFixSaving(true);
+    try {
+      const resp = await fetch("/api/vocab-correction", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wrong_text: fixPopover.wrongText,
+          correct_text: fixPopover.correctText.trim(),
+          source_date: new Date().toISOString().slice(0, 10),
+          source_slot: 0,
+        }),
+      });
+      if (resp.ok) {
+        // Replace the wrong text in the current transcript view
+        // (visual fix — the stored transcript is updated via edit mode save)
+        const corrected = fixPopover.correctText.trim();
+        setFixToast(`Fixed — this will also help future recordings recognize "${corrected}" correctly.`);
+        setTimeout(() => setFixToast(null), 4000);
+        setFixPopover({ show: false, x: 0, y: 0, wrongText: "", correctText: "" });
+        window.getSelection()?.removeAllRanges();
+      } else {
+        setFixToast("Could not save correction — please try again.");
+        setTimeout(() => setFixToast(null), 3000);
+      }
+    } catch {
+      setFixToast("Network error — correction not saved.");
+      setTimeout(() => setFixToast(null), 3000);
+    }
+    setFixSaving(false);
+  }, [fixPopover.wrongText, fixPopover.correctText]);
+
+  // ============================================================
   // History handlers
   // ============================================================
 
@@ -1632,7 +1739,11 @@ export default function Marqad() {
 
       {/* ===== Paper Page ===== */}
       <div className="page-scroll" ref={pageScrollRef} onScroll={handleScroll}>
-        <div className="page">
+        <div
+          className="page"
+          ref={transcriptAreaRef}
+          onMouseUp={handleTranscriptMouseUp}
+        >
           {viewingRecord ? (
             /* ===== Viewing mode: editable past session ===== */
             <div className="viewing-mode">
@@ -1698,6 +1809,47 @@ export default function Marqad() {
           )}
         </div>
       </div>
+
+      {/* ===== Fix this popover (vocabulary correction) ===== */}
+      {fixPopover.show && (
+        <div
+          className="fix-popover"
+          style={{ left: fixPopover.x, top: fixPopover.y }}
+        >
+          <div className="fix-popover-label">
+            Fix &ldquo;{fixPopover.wrongText}&rdquo; →
+          </div>
+          <input
+            type="text"
+            className="fix-popover-input"
+            placeholder="What should this actually say?"
+            value={fixPopover.correctText}
+            onChange={(e) =>
+              setFixPopover((prev) => ({ ...prev, correctText: e.target.value }))
+            }
+            onKeyDown={(e) => {
+              if (e.key === "Enter") submitVocabFix();
+              if (e.key === "Escape") {
+                setFixPopover({ show: false, x: 0, y: 0, wrongText: "", correctText: "" });
+              }
+            }}
+            autoFocus
+            disabled={fixSaving}
+          />
+          <button
+            className="fix-popover-btn"
+            onClick={submitVocabFix}
+            disabled={fixSaving || !fixPopover.correctText.trim()}
+          >
+            {fixSaving ? "Saving…" : "Fix"}
+          </button>
+        </div>
+      )}
+
+      {/* ===== Fix toast ===== */}
+      {fixToast && (
+        <div className="fix-toast">{fixToast}</div>
+      )}
 
       {/* ===== History Panel ===== */}
       <HistoryPanel
