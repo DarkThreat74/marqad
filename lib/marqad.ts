@@ -1,0 +1,403 @@
+/* ============================================================
+   Marqad — constants, types, and helper functions
+   Implements BUILD_SPEC Sections 3.2–3.8
+   ============================================================ */
+
+// ===== Config (Section 3.2) =====
+// US region confirmed by user. Language `ar_en` verified live against
+// current Speechmatics docs (2026-07-15): "Arabic & English bilingual —
+// Ideal when transcribing Arabic and English in the same media file or
+// stream." WebSocket URL format verified: language is a path segment,
+// host is `us.rt` (not the legacy `eu2.rt` in the spec).
+export const CONFIG = {
+  TOKEN_ENDPOINT: process.env.NEXT_PUBLIC_SPEECHMATICS_TOKEN_ENDPOINT || "",
+  WS_HOST: "wss://us.rt.speechmatics.com/v2",
+  LANGUAGE: "ar_en",
+  SAMPLE_RATE: 16000,
+  MAX_DELAY: 0.7,
+  AUDIO_CHUNK_SIZE: 4096,
+};
+
+// ===== Types =====
+export interface WordToken {
+  content: string;
+  speaker: string;
+  language: string;
+  direction: "ltr" | "rtl";
+  confidence: number;
+  type: "word" | "punctuation" | "spacing";
+}
+
+export interface Segment {
+  id: string;
+  words: WordToken[];
+  transcript: string;
+  speaker: string;
+  audioStart: number;
+  audioEnd: number;
+  wallTime: number;
+  spacing: "none" | "comma" | "line" | "paragraph" | "divider";
+}
+
+export type ViewFormat = "prose" | "dialogue" | "notes";
+
+// ===== Speaker colors (Section 3.6 — ~7 stable accent colors) =====
+export const SPEAKER_COLORS = [
+  "#5EEAD4", // teal
+  "#F5A623", // amber
+  "#A78BFA", // purple
+  "#60A5FA", // blue
+  "#F472B6", // pink
+  "#34D399", // green
+  "#FB923C", // orange
+];
+
+export function speakerColor(speaker: string): string {
+  if (!speaker || speaker === "UU") return "#6B7280";
+  const match = speaker.match(/S(\d+)/);
+  if (!match) return "#6B7280";
+  const idx = parseInt(match[1], 10) - 1;
+  return SPEAKER_COLORS[idx % SPEAKER_COLORS.length];
+}
+
+// ===== Common English words stoplist (Section 3.5) =====
+// Used to identify uncommon/uncertain terms. Not a full dictionary —
+// intentionally modest; the goal is to flag scholarly terminology that
+// a general model won't recognize, not to be a spell-checker.
+const COMMON_WORDS_SET = new Set([
+  // articles, pronouns, prepositions, conjunctions
+  "the","a","an","and","or","but","if","then","else","when","while","of","to","in","on","at","by","for","with","about","against","between","into","through","during","before","after","above","below","from","up","down","out","off","over","under","again","further","here","there","all","any","both","each","few","more","most","other","some","such","no","nor","not","only","own","same","so","than","too","very","can","will","just","should","now","is","am","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","must","i","you","he","she","it","we","they","me","him","her","us","them","my","your","his","its","our","their","mine","yours","hers","ours","theirs","this","that","these","those","what","which","who","whom","whose","where","why","how","all","another","anybody","anyone","anything","each","everybody","everyone","everything",
+  // common verbs
+  "get","got","make","made","take","took","give","gave","go","went","come","came","see","saw","know","knew","think","thought","say","said","tell","told","ask","asked","find","found","put","let","mean","meant","keep","kept","seem","seemed","feel","felt","try","tried","leave","left","call","called","want","need","use","used","work","worked","look","looked","become","became","create","created","show","showed","start","started","stop","stopped","speak","spoke","read","write","wrote","hear","heard","run","walk","eat","drink","sleep","wake","sit","stand","move","turn","open","close","begin","began","end","finish","finished","continue","bring","brought","buy","bought","build","built","break","broke","fall","fell","rise","rose","send","sent","receive","set","meet","met","pay","paid","cut","hit","wear","wore","teach","taught","learn","learnt","study","studied","play","help","helped","live","living","die","died","born","grow","grew","understand","understood","remember","forget","forgot","believe","believed","happen","happened","allow","allowed","answer","answered","appear","appeared","arrive","arrived","decide","decided","develop","explain","explained","happen","happened","happen","produce","produced","provide","provided","remain","remained","require","required","seem","seemed","support","supported","happen","happen",
+  // common adjectives/adverbs
+  "good","bad","great","small","large","big","little","old","new","young","long","short","high","low","full","empty","hard","soft","heavy","light","warm","cold","hot","fast","slow","easy","difficult","simple","complex","clean","dirty","strong","weak","rich","poor","happy","sad","angry","afraid","safe","dangerous","true","false","real","right","wrong","left","early","late","near","far","close","open","closed","public","private","general","specific","important","possible","impossible","able","unable","free","busy","ready","sure","clear","dark","bright","quiet","loud","beautiful","ugly","special","normal","usual","unusual","common","rare","single","double","main","only","same","different","similar","particular","certain","current","past","future","present","final","initial","total","complete","incomplete","whole","partial","enough","much","many","more","most","less","least","few","little","enough","too","also","still","already","yet","ever","never","always","often","sometimes","usually","rarely","seldom","again","once","twice","first","second","third","last","next","previous","forward","backward","away","back","ahead","behind","beside","around","along","across","through","throughout","within","without","upon","onto","towards","against","among","amongst","per","via","etc","versus","vs",
+  // common nouns
+  "time","year","day","week","month","people","man","woman","child","boy","girl","family","friend","home","house","room","door","window","table","chair","bed","food","water","milk","bread","meat","rice","fruit","tea","coffee","salt","sugar","oil","book","pen","paper","word","letter","number","name","place","city","country","world","land","sea","river","mountain","tree","flower","sun","moon","star","sky","earth","fire","air","wind","rain","snow","road","street","car","ship","boat","train","plane","school","class","student","teacher","lesson","question","answer","problem","idea","fact","truth","way","method","part","side","line","point","end","beginning","middle","center","area","space","case","group","number","amount","quantity","quality","color","sound","voice","light","darkness","power","force","energy","life","death","love","hate","fear","hope","peace","war","law","rule","order","reason","mind","heart","soul","spirit","body","hand","foot","head","face","eye","ear","nose","mouth","tooth","hair","skin","bone","blood","water","fire","earth","air","animal","bird","fish","horse","cow","sheep","goat","cat","dog","morning","evening","night","noon","today","tomorrow","yesterday","moment","minute","hour","second","season","spring","summer","autumn","winter","north","south","east","west","thing","something","nothing","anything","everything","someone","anyone","everyone","nobody","anybody","everybody","way","kind","sort","type","form","manner","fashion","style","level","degree","stage","step","phase","period","era","age","generation","century","decade","society","community","nation","state","government","church","mosque","temple","god","faith","belief","prayer","worship","sin","virtue","good","evil","heaven","hell","angel","devil","prophet","saint","priest","scholar","student","teacher","master","servant","king","queen","prince","princess","leader","follower","enemy","ally","stranger","guest","host","neighbor","citizen","foreigner","visitor","patient","doctor","nurse","farmer","merchant","soldier","judge","lawyer","writer","artist","musician","singer","dancer","player","actor","builder","maker","creator","worker","laborer","manager","owner","buyer","seller","giver","receiver","speaker","listener","reader","viewer","observer","witness","participant","member","partner","colleague","assistant","helper","guide","guard","protector","ruler","judge","minister","ambassador","diplomat","scholar","philosopher","scientist","mathematician","historian","poet","author","novelist","journalist","reporter","editor","publisher","translator","interpreter","commentator","critic","reviewer","researcher","professor","lecturer","tutor","mentor","coach","trainer","instructor","educator","administrator","director","supervisor","controller","inspector","examiner","auditor","accountant","treasurer","secretary","clerk","assistant","deputy","vice","deputy","assistant","secretary","treasurer","accountant","auditor","examiner","inspector","controller","supervisor","director","administrator","educator","instructor","trainer","coach","mentor","tutor","lecturer","professor","researcher","reviewer","critic","commentator","interpreter","translator","publisher","editor","reporter","journalist","novelist","author","poet","historian","mathematician","scientist","philosopher","scholar",
+  // days, months (common capitalized words)
+  "monday","tuesday","wednesday","thursday","friday","saturday","sunday","january","february","march","april","may","june","july","august","september","october","november","december","jan","feb","mar","apr","jun","jul","aug","sep","sept","oct","nov","dec",
+  // common contractions
+  "don't","doesn't","didn't","won't","wouldn't","can't","couldn't","shouldn't","isn't","aren't","wasn't","weren't","hasn't","haven't","hadn't","i'm","you're","he's","she's","it's","we're","they're","i've","you've","we've","they've","i'll","you'll","he'll","she'll","we'll","they'll","i'd","you'd","he'd","she'd","we'd","they'd","that's","there's","here's","what's","who's","how's","let's",
+  // common in Islamic/classroom context that ARE common and shouldn't be flagged
+  "god","allah","book","books","chapter","chapters","verse","verses","section","sections","page","pages","word","words","sentence","sentences","topic","topics","subject","subjects","question","questions","answer","answers","example","examples","point","points","idea","ideas","thought","thoughts","concept","concepts","principle","principles","rule","rules","law","laws","theory","theories","method","methods","approach","approaches","practice","practices","study","studies","research","analysis","review","summary","conclusion","introduction","background","context","history","historical","ancient","modern","classical","traditional","contemporary","current","recent","previous","following","above","below","former","latter","first","second","third","last","final","initial","primary","secondary","main","major","minor","key","central","essential","important","crucial","vital","significant","notable","remarkable","famous","well-known","known","unknown","certain","uncertain","clear","unclear","obvious","evident","apparent","visible","invisible","explicit","implicit","direct","indirect","literal","metaphorical","figurative","symbolic","allegorical",
+  // common question words and fillers
+  "yes","no","okay","ok","alright","sure","maybe","perhaps","probably","possibly","definitely","certainly","absolutely","exactly","precisely","quite","rather","somewhat","slightly","barely","hardly","almost","nearly","about","around","approximately","roughly","essentially","basically","fundamentally","ultimately","finally","eventually","subsequently","previously","formerly","originally","initially","primarily","mainly","mostly","largely","broadly","generally","typically","usually","commonly","frequently","rarely","seldom","occasionally","sometimes","often","always","never","ever","still","already","yet","now","then","soon","later","earlier","afterwards","afterward","meanwhile","simultaneously","concurrently","together","apart","aside","away","back","forth","forward","backward","upward","downward","inward","outward","onward",
+]);
+
+export function isCommonWord(word: string): boolean {
+  return COMMON_WORDS_SET.has(word.toLowerCase().replace(/[^\w']/g, ""));
+}
+
+// ===== Arabic detection (Section 3.1 + 3.3) =====
+const ARABIC_REGEX = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+
+export function isArabicText(text: string): boolean {
+  return ARABIC_REGEX.test(text);
+}
+
+export function isArabicWord(word: WordToken): boolean {
+  // Use direction field from Speechmatics if present, then language, then
+  // Unicode range as fallback (per spec Section 3.3).
+  if (word.direction === "rtl") return true;
+  if (word.language && word.language.startsWith("ar")) return true;
+  return isArabicText(word.content);
+}
+
+// ===== Date detection (Section 3.5 — purple highlight) =====
+const MONTH_NAMES = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i;
+const YEAR_REGEX = /\b(19|20|21)\d{2}\b/; // Gregorian years
+const HIJRI_YEAR = /\b14[0-9]{2}\b|\b15[0-9]{2}\b/; // Hijri years 1400-1599
+const ORDINAL = /\b\d+(st|nd|rd|th)\b/i;
+const DATE_KEYWORDS = /\b(century|hijri|millennium|decade|era|epoch|year|date)\b/i;
+const DATE_ERAS = /\b(ce|bce|ah|bh|ad|bc)\b/i;
+
+export function isDateWord(word: string): boolean {
+  const w = word.trim();
+  if (!w) return false;
+  if (MONTH_NAMES.test(w)) return true;
+  if (YEAR_REGEX.test(w)) return true;
+  if (HIJRI_YEAR.test(w)) return true;
+  if (ORDINAL.test(w)) return true;
+  if (DATE_KEYWORDS.test(w)) return true;
+  if (DATE_ERAS.test(w) && w.length <= 3) return true;
+  return false;
+}
+
+// ===== Proper noun detection (Section 3.5 — teal highlight) =====
+export function isProperNoun(word: string, isSentenceInitial: boolean): boolean {
+  if (!word) return false;
+  // Must be capitalized and not sentence-initial
+  if (!/^[A-Z]/.test(word)) return false;
+  if (isSentenceInitial) return false;
+  // Not a common word (includes month names, days, etc.)
+  if (isCommonWord(word)) return false;
+  // Not a date (dates get purple, not teal)
+  if (isDateWord(word)) return false;
+  // Not a single-letter abbreviation
+  if (word.length <= 1) return false;
+  return true;
+}
+
+// ===== Uncertain term detection (Section 3.5 — dotted amber) =====
+const CONSONANTS = "bcdfghjklmnpqrstvwxyz";
+
+export function hasAtypicalConsonantClusters(word: string): boolean {
+  const lower = word.toLowerCase();
+  let maxCluster = 0;
+  let currentCluster = 0;
+  for (const char of lower) {
+    if (CONSONANTS.includes(char)) {
+      currentCluster++;
+      if (currentCluster > maxCluster) maxCluster = currentCluster;
+    } else {
+      currentCluster = 0;
+    }
+  }
+  // 4+ consecutive consonant letters is atypical for common English
+  // (common words with 4+ clusters like "strengths" are filtered by the
+  // stoplist check in isUncertain)
+  if (maxCluster >= 4) return true;
+  // 'q' not followed by 'u' is unusual in English, common in Arabic transliteration
+  if (/q(?!u)/i.test(lower)) return true;
+  return false;
+}
+
+export function isUncertain(word: string): boolean {
+  if (!word || word.length < 3) return false;
+  if (isArabicText(word)) return false; // (b) not Arabic
+  if (isCommonWord(word)) return false; // (a) not in stoplist
+  if (isDateWord(word)) return false; // dates get their own highlight
+  // (c) consonant clusters atypical of common English words
+  return hasAtypicalConsonantClusters(word);
+}
+
+// ===== Word classification — determines CSS class(es) =====
+export function classifyWord(
+  word: WordToken,
+  isSentenceInitial: boolean
+): string[] {
+  const classes: string[] = [];
+  const content = word.content;
+
+  // Arabic rendering (orthogonal to entity flags — always applied)
+  if (isArabicWord(word)) {
+    classes.push("arabic");
+  }
+
+  // Entity highlighting — priority: uncertain > date > proper-noun
+  // (uncertain takes priority: "transcribed as heard, not verified")
+  if (word.type !== "punctuation" && word.type !== "spacing") {
+    if (isUncertain(content)) {
+      classes.push("uncertain");
+    } else if (isDateWord(content)) {
+      classes.push("entity-date");
+    } else if (isProperNoun(content, isSentenceInitial)) {
+      classes.push("entity-name");
+    }
+  }
+
+  return classes;
+}
+
+// ===== Pause-driven spacing (Section 3.4) =====
+export function classifyPause(
+  gapMs: number
+): "none" | "comma" | "line" | "paragraph" | "divider" {
+  if (gapMs < 400) return "none";
+  if (gapMs < 1000) return "comma";
+  if (gapMs < 2200) return "line";
+  if (gapMs < 4500) return "paragraph";
+  return "divider";
+}
+
+// ===== Time formatting =====
+export function formatTimestamp(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+export function formatMinutes(seconds: number): string {
+  return (seconds / 60).toFixed(1);
+}
+
+// ===== Audio conversion: Float32 → Int16 PCM =====
+export function float32ToInt16(float32: Float32Array): ArrayBuffer {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return int16.buffer;
+}
+
+// ===== StartRecognition message (Section 3.3) =====
+export function buildStartRecognition(): string {
+  return JSON.stringify({
+    message: "StartRecognition",
+    transcription_config: {
+      language: CONFIG.LANGUAGE,
+      model: "enhanced", // current field name (operating_point is deprecated)
+      enable_partials: true,
+      max_delay: CONFIG.MAX_DELAY,
+      diarization: "speaker",
+      // max_speakers omitted — let the model auto-detect (per spec Section 3.6)
+    },
+    audio_format: {
+      type: "raw",
+      encoding: "pcm_s16le",
+      sample_rate: CONFIG.SAMPLE_RATE,
+    },
+  });
+}
+
+// ===== Export format (Section 3.8) =====
+export function buildExportText(segments: Segment[]): string {
+  const lines: string[] = [];
+  for (const seg of segments) {
+    const time = formatTimestamp(seg.audioStart);
+    const speaker = seg.speaker || "UU";
+    lines.push(`[${time}] Speaker ${speaker}: ${seg.transcript}`);
+  }
+  return lines.join("\n");
+}
+
+// ============================================================
+// Session History (localStorage-based)
+// ============================================================
+
+export interface SessionRecord {
+  id: string;
+  date: string;          // ISO string
+  durationSec: number;   // actual streaming seconds (excludes pause time)
+  segmentCount: number;
+  preview: string;       // first ~120 chars of transcript
+  exportText: string;    // full export text for re-copy/view
+}
+
+const HISTORY_KEY = "marqad-history";
+const MAX_HISTORY_ENTRIES = 50;
+
+export function loadHistory(): SessionRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed;
+  } catch {
+    return [];
+  }
+}
+
+export function saveSession(record: SessionRecord): SessionRecord[] {
+  const history = loadHistory();
+  history.unshift(record); // newest first
+  // Trim to max entries
+  if (history.length > MAX_HISTORY_ENTRIES) {
+    history.length = MAX_HISTORY_ENTRIES;
+  }
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch (e) {
+    // localStorage quota exceeded — trim older entries and retry
+    while (history.length > 5) {
+      history.pop();
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+        break;
+      } catch {}
+    }
+  }
+  return history;
+}
+
+export function deleteSession(id: string): SessionRecord[] {
+  const history = loadHistory().filter((s) => s.id !== id);
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  } catch {}
+  return history;
+}
+
+export function clearHistory(): void {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
+  } catch {}
+}
+
+// ============================================================
+// Monthly Usage Tracking (Section 3.7 — free tier calculator)
+// Free tier: 3,000 minutes/month, 2 concurrent real-time sessions
+// Tracks ACTUAL streaming seconds (excludes paused time).
+// ============================================================
+
+export const FREE_TIER_MINUTES = 3000;
+
+function getMonthlyKey(): string {
+  const now = new Date();
+  return `marqad-usage-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+export function loadMonthlySeconds(): number {
+  if (typeof window === "undefined") return 0;
+  const val = localStorage.getItem(getMonthlyKey());
+  return val ? parseFloat(val) : 0;
+}
+
+export function saveMonthlySeconds(seconds: number): void {
+  try {
+    localStorage.setItem(getMonthlyKey(), String(seconds));
+  } catch {}
+}
+
+export function addToMonthlySeconds(seconds: number): number {
+  const current = loadMonthlySeconds();
+  const updated = current + seconds;
+  saveMonthlySeconds(updated);
+  return updated;
+}
+
+export interface UsageStats {
+  monthlySeconds: number;
+  monthlyMinutes: number;
+  freeTierMinutes: number;
+  remainingMinutes: number;
+  percentUsed: number;
+  remainingPercent: number;
+  daysInMonth: number;
+  dayOfMonth: number;
+  // Projected usage at current rate
+  projectedMonthlyMinutes: number;
+  isOverLimit: boolean;
+}
+
+export function getUsageStats(currentSessionSec: number): UsageStats {
+  const monthlySeconds = loadMonthlySeconds();
+  const monthlyMinutes = monthlySeconds / 60;
+  const sessionMinutes = currentSessionSec / 60;
+  const remainingMinutes = Math.max(0, FREE_TIER_MINUTES - monthlyMinutes);
+  const percentUsed = Math.min(100, (monthlyMinutes / FREE_TIER_MINUTES) * 100);
+
+  const now = new Date();
+  const dayOfMonth = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+
+  // Project: if user uses `monthlyMinutes` so far in `dayOfMonth` days,
+  // project to full month
+  const projectedMonthlyMinutes =
+    dayOfMonth > 0 ? (monthlyMinutes / dayOfMonth) * daysInMonth : monthlyMinutes;
+
+  return {
+    monthlySeconds,
+    monthlyMinutes,
+    freeTierMinutes: FREE_TIER_MINUTES,
+    remainingMinutes,
+    percentUsed,
+    remainingPercent: 100 - percentUsed,
+    daysInMonth,
+    dayOfMonth,
+    projectedMonthlyMinutes,
+    isOverLimit: monthlyMinutes >= FREE_TIER_MINUTES,
+  };
+}

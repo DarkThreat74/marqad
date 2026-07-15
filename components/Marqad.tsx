@@ -1,0 +1,1037 @@
+"use client";
+
+import { useState, useRef, useEffect, useCallback, memo } from "react";
+import {
+  CONFIG,
+  type Segment,
+  type WordToken,
+  type ViewFormat,
+  type SessionRecord,
+  type UsageStats,
+  speakerColor,
+  classifyWord,
+  classifyPause,
+  formatTimestamp,
+  float32ToInt16,
+  buildStartRecognition,
+  buildExportText,
+  isArabicText,
+  loadHistory,
+  saveSession,
+  deleteSession,
+  getUsageStats,
+  addToMonthlySeconds,
+  loadMonthlySeconds,
+} from "@/lib/marqad";
+
+// ============================================================
+// Memoized segment view
+// ============================================================
+
+function renderWords(seg: Segment): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let sentenceInitial = true;
+  for (let i = 0; i < seg.words.length; i++) {
+    const w = seg.words[i];
+    if (w.type === "spacing") {
+      nodes.push(<span key={i}> </span>);
+      continue;
+    }
+    if (w.type === "punctuation") {
+      nodes.push(<span key={i}>{w.content}</span>);
+      if (/[.!?؟。]/.test(w.content)) sentenceInitial = true;
+      continue;
+    }
+    if (nodes.length > 0) {
+      const prev = seg.words[i - 1];
+      if (!prev || prev.type !== "punctuation") {
+        nodes.push(<span key={`sp-${i}`}> </span>);
+      }
+    }
+    const classes = classifyWord(w, sentenceInitial);
+    nodes.push(
+      <span key={i} className={classes.join(" ")}>
+        {w.content}
+      </span>
+    );
+    sentenceInitial = false;
+  }
+  return nodes;
+}
+
+const SegmentView = memo(function SegmentView({
+  segment,
+  format,
+  prevSpeaker,
+}: {
+  segment: Segment;
+  format: ViewFormat;
+  prevSpeaker: string | null;
+}) {
+  const speakerChanged = prevSpeaker !== segment.speaker;
+  const color = speakerColor(segment.speaker);
+
+  if (format === "dialogue") {
+    return (
+      <div className="dialogue-line">
+        <div className="dialogue-meta">
+          [{formatTimestamp(segment.audioStart)}]{" "}
+          <span className="speaker-swatch" style={{ background: color }} />
+          <span className="speaker-label">Speaker {segment.speaker}</span>
+        </div>
+        <span>{renderWords(segment)}</span>
+      </div>
+    );
+  }
+
+  if (format === "notes") {
+    return (
+      <div className="notes-block">
+        <div className="notes-header">
+          <span className="speaker-swatch" style={{ background: color }} />
+          <span className="speaker-label">
+            Speaker {segment.speaker} · {formatTimestamp(segment.audioStart)}
+          </span>
+        </div>
+        <span>{renderWords(segment)}</span>
+      </div>
+    );
+  }
+
+  return (
+    <span>
+      {segment.spacing === "line" && <br />}
+      {segment.spacing === "paragraph" && (
+        <>
+          <br />
+          <br />
+        </>
+      )}
+      {segment.spacing === "divider" && (
+        <hr className="spacing-divider" />
+      )}
+      {speakerChanged && (
+        <span
+          className="speaker-dot"
+          style={{ background: color }}
+          title={`Speaker ${segment.speaker}`}
+        />
+      )}
+      {renderWords(segment)}
+    </span>
+  );
+});
+
+// ============================================================
+// History Panel
+// ============================================================
+
+function HistoryPanel({
+  open,
+  onClose,
+  history,
+  onDelete,
+  onView,
+}: {
+  open: boolean;
+  onClose: () => void;
+  history: SessionRecord[];
+  onDelete: (id: string) => void;
+  onView: (record: SessionRecord) => void;
+}) {
+  const [viewing, setViewing] = useState<SessionRecord | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  if (!open) return null;
+
+  return (
+    <>
+      <div className="history-overlay" onClick={onClose} />
+      <div className="history-panel">
+        <div className="history-header">
+          <h2 className="history-title">History</h2>
+          <button className="history-close" onClick={onClose} aria-label="Close history">
+            ✕
+          </button>
+        </div>
+
+        {viewing ? (
+          <div className="history-viewer">
+            <button className="history-back" onClick={() => setViewing(null)}>
+              ← Back
+            </button>
+            <div className="history-viewer-meta">
+              {new Date(viewing.date).toLocaleString()} ·{" "}
+              {Math.round(viewing.durationSec / 60)} min ·{" "}
+              {viewing.segmentCount} segments
+            </div>
+            <button
+              className="copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(viewing.exportText).catch(() => {});
+              }}
+            >
+              Copy transcript
+            </button>
+            <pre className="history-viewer-text">{viewing.exportText}</pre>
+          </div>
+        ) : history.length === 0 ? (
+          <div className="history-empty">No recorded sessions yet.</div>
+        ) : (
+          <div className="history-list">
+            {history.map((record) => (
+              <div key={record.id} className="history-entry">
+                <div
+                  className="history-entry-content"
+                  onClick={() => setViewing(record)}
+                >
+                  <div className="history-entry-date">
+                    {new Date(record.date).toLocaleDateString(undefined, {
+                      weekday: "short",
+                      month: "short",
+                      day: "numeric",
+                    })}{" "}
+                    ·{" "}
+                    {new Date(record.date).toLocaleTimeString(undefined, {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </div>
+                  <div className="history-entry-meta">
+                    {Math.round(record.durationSec / 60)} min ·{" "}
+                    {record.segmentCount} segments
+                  </div>
+                  <div className="history-entry-preview">{record.preview}</div>
+                </div>
+                {confirmDelete === record.id ? (
+                  <div className="history-delete-confirm">
+                    <button
+                      className="history-delete-yes"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(null);
+                        onDelete(record.id);
+                      }}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="history-delete-no"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDelete(null);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="history-delete-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setConfirmDelete(record.id);
+                    }}
+                    aria-label="Delete session"
+                    title="Delete this session"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// Usage Bar (free plan calculator)
+// ============================================================
+
+function UsageBar({ stats }: { stats: UsageStats }) {
+  const { percentUsed, remainingMinutes, monthlyMinutes, projectedMonthlyMinutes } = stats;
+  const barColor =
+    percentUsed >= 90 ? "#F5A623" : percentUsed >= 75 ? "#F5A623" : "#5EEAD4";
+
+  return (
+    <div className="usage-bar-container" title={`Free tier: 3,000 min/month. Used ${monthlyMinutes.toFixed(1)} min. Projected: ${projectedMonthlyMinutes.toFixed(0)} min.`}>
+      <div className="usage-bar-track">
+        <div
+          className="usage-bar-fill"
+          style={{ width: `${percentUsed}%`, background: barColor }}
+        />
+      </div>
+      <div className="usage-bar-label">
+        <span className="usage-bar-used">{monthlyMinutes.toFixed(0)} min</span>
+        <span className="usage-bar-sep">/</span>
+        <span className="usage-bar-total">3000</span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Main Marqad component
+// ============================================================
+
+type RecordingState = "idle" | "connecting" | "recording" | "paused" | "stopping";
+
+export default function Marqad() {
+  // --- State ---
+  const [recState, setRecState] = useState<RecordingState>("idle");
+  const [statusText, setStatusText] = useState("Ready");
+  const [statusKind, setStatusKind] = useState<"idle" | "active" | "connecting" | "error" | "paused">("idle");
+  const [partial, setPartial] = useState("");
+  const [segments, setSegments] = useState<Segment[]>([]);
+  const [format, setFormat] = useState<ViewFormat>("prose");
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [usageStats, setUsageStats] = useState<UsageStats | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [history, setHistory] = useState<SessionRecord[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [armed, setArmed] = useState(false); // accidental start prevention
+
+  // --- Refs ---
+  const wsRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const zeroGainRef = useRef<GainNode | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const elapsedRef = useRef(0);
+  const recognitionStartedRef = useRef(false);
+  const shouldReconnectRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAudioEndRef = useRef<number | null>(null);
+  const lastWallTimeRef = useRef<number | null>(null);
+  const segIdCounter = useRef(0);
+  const isAtBottomRef = useRef(true);
+  const pageScrollRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const waveformData = useRef<number[]>(new Array(48).fill(0));
+  const rafRef = useRef<number | null>(null);
+  const segmentsRef = useRef<Segment[]>([]);
+  const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isPausedRef = useRef(false);
+  const sessionStartRef = useRef<number>(0);
+  const sessionStreamingSecRef = useRef(0); // actual streaming time (excludes pauses)
+  const streamingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Keep segmentsRef in sync
+  useEffect(() => {
+    segmentsRef.current = segments;
+  }, [segments]);
+
+  // Load history + usage on mount
+  useEffect(() => {
+    setHistory(loadHistory());
+    setUsageStats(getUsageStats(0));
+  }, []);
+
+  // Register service worker
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
+
+  // Auto-scroll
+  useEffect(() => {
+    const el = pageScrollRef.current;
+    if (el && isAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [segments, partial]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      teardown();
+      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    };
+  }, []);
+
+  // ============================================================
+  // Waveform
+  // ============================================================
+
+  const drawWaveform = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth * dpr;
+    const h = canvas.clientHeight * dpr;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+
+    ctx.clearRect(0, 0, w, h);
+    const data = waveformData.current;
+    const barWidth = w / data.length;
+    const isActive = recState === "recording";
+    const color = isActive ? "#5EEAD4" : recState === "paused" ? "#F5A623" : "#2a2823";
+
+    for (let i = 0; i < data.length; i++) {
+      const amp = Math.min(1, data[i]);
+      const barH = Math.max(2 * dpr, amp * h * 0.9);
+      ctx.fillStyle = color;
+      ctx.fillRect(
+        i * barWidth + barWidth * 0.15,
+        (h - barH) / 2,
+        barWidth * 0.7,
+        barH
+      );
+    }
+
+    if (isActive || recState === "paused") {
+      rafRef.current = requestAnimationFrame(drawWaveform);
+    }
+  }, [recState]);
+
+  useEffect(() => {
+    if (recState === "recording" || recState === "paused") {
+      rafRef.current = requestAnimationFrame(drawWaveform);
+    } else {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+    }
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [recState, drawWaveform]);
+
+  // ============================================================
+  // WebSocket message handling
+  // ============================================================
+
+  const handleWsMessage = useCallback((event: MessageEvent) => {
+    if (event.data instanceof ArrayBuffer) return;
+    let msg: any;
+    try {
+      msg = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    switch (msg.message) {
+      case "RecognitionStarted":
+        recognitionStartedRef.current = true;
+        reconnectAttemptsRef.current = 0;
+        setRecState("recording");
+        setStatusText("Recording");
+        setStatusKind("active");
+        break;
+
+      case "AddPartialTranscript":
+        if (msg.metadata?.transcript) {
+          setPartial(msg.metadata.transcript);
+        }
+        break;
+
+      case "AddTranscript": {
+        setPartial("");
+        const seg = parseTranscript(msg);
+        if (seg) {
+          setSegments((prev) => {
+            const next = [...prev, seg];
+            segmentsRef.current = next;
+            return next;
+          });
+        }
+        break;
+      }
+
+      case "EndOfTranscript":
+        break;
+
+      case "Error":
+        setStatusText(`Error: ${msg.reason || msg.type || "unknown"}`);
+        setStatusKind("error");
+        break;
+    }
+  }, []);
+
+  const parseTranscript = useCallback((msg: any): Segment | null => {
+    const metadata = msg.metadata || {};
+    const results: any[] = msg.results || [];
+    const transcript: string = metadata.transcript || "";
+    if (!transcript && results.length === 0) return null;
+
+    const words: WordToken[] = [];
+    let primarySpeaker = "UU";
+
+    for (const r of results) {
+      const alt = r.alternatives?.[0] || {};
+      const content = alt.content || "";
+      const type = r.type || "word";
+      const speaker = alt.speaker || "UU";
+      const language = alt.language || "";
+      const direction: "ltr" | "rtl" =
+        alt.direction || (language.startsWith("ar") ? "rtl" : "ltr");
+      const confidence = alt.confidence || 0;
+
+      words.push({ content, speaker, language, direction, confidence, type });
+
+      if (type === "word" && speaker !== "UU") {
+        primarySpeaker = speaker;
+      }
+    }
+
+    if (words.length === 0 && transcript) {
+      words.push({
+        content: transcript,
+        speaker: primarySpeaker,
+        language: isArabicText(transcript) ? "ar" : "en",
+        direction: isArabicText(transcript) ? "rtl" : "ltr",
+        confidence: 0,
+        type: "word",
+      });
+    }
+
+    const audioStart = metadata.start_time ?? 0;
+    const audioEnd = metadata.end_time ?? audioStart;
+    const wallTime = Date.now();
+
+    let spacing: Segment["spacing"] = "none";
+    if (lastAudioEndRef.current !== null && lastWallTimeRef.current !== null) {
+      const audioGap = (audioStart - lastAudioEndRef.current) * 1000;
+      const wallGap = wallTime - lastWallTimeRef.current;
+      const gap = audioGap >= 0 ? audioGap : wallGap;
+      spacing = classifyPause(gap);
+    }
+
+    lastAudioEndRef.current = audioEnd;
+    lastWallTimeRef.current = wallTime;
+
+    return {
+      id: `seg-${segIdCounter.current++}`,
+      words,
+      transcript,
+      speaker: primarySpeaker,
+      audioStart,
+      audioEnd,
+      wallTime,
+      spacing,
+    };
+  }, []);
+
+  // ============================================================
+  // WebSocket connection
+  // ============================================================
+
+  const connectWebSocket = useCallback(async () => {
+    setStatusText("Fetching token...");
+    setStatusKind("connecting");
+
+    let jwt: string;
+    try {
+      const resp = await fetch(CONFIG.TOKEN_ENDPOINT);
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      jwt = data.jwt;
+      if (!jwt) throw new Error("No jwt in response");
+    } catch (err: any) {
+      setStatusText(`Token error: ${err.message}`);
+      setStatusKind("error");
+      setRecState("idle");
+      return false;
+    }
+
+    setStatusText("Connecting to Speechmatics...");
+    setStatusKind("connecting");
+
+    const wsUrl = `${CONFIG.WS_HOST}/${CONFIG.LANGUAGE}?jwt=${jwt}`;
+    const ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      ws.send(buildStartRecognition());
+      setStatusText("Starting recognition...");
+    };
+
+    ws.onmessage = handleWsMessage;
+
+    ws.onerror = () => {
+      setStatusText("Connection error");
+      setStatusKind("error");
+    };
+
+    ws.onclose = () => {
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      recognitionStartedRef.current = false;
+
+      if (shouldReconnectRef.current && !isPausedRef.current && reconnectAttemptsRef.current < 4) {
+        const delays = [2000, 5000, 10000, 20000];
+        const delay = delays[reconnectAttemptsRef.current];
+        reconnectAttemptsRef.current++;
+        setStatusText(`Reconnecting in ${delay / 1000}s... (${reconnectAttemptsRef.current}/4)`);
+        setStatusKind("connecting");
+        reconnectTimerRef.current = setTimeout(() => {
+          connectWebSocket();
+        }, delay);
+      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 4) {
+        setStatusText("Reconnection failed");
+        setStatusKind("error");
+        setRecState("idle");
+        shouldReconnectRef.current = false;
+      }
+    };
+
+    return true;
+  }, [handleWsMessage]);
+
+  // ============================================================
+  // Start recording (with accidental-start prevention)
+  // ============================================================
+
+  const armStart = useCallback(() => {
+    if (recState !== "idle") return;
+    setArmed(true);
+    // Auto-disarm after 4 seconds if not confirmed
+    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    armedTimerRef.current = setTimeout(() => setArmed(false), 4000);
+  }, [recState]);
+
+  const confirmStart = useCallback(async () => {
+    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    setArmed(false);
+
+    if (recState !== "idle") return;
+    setRecState("connecting");
+    setStatusText("Requesting microphone...");
+    setStatusKind("connecting");
+    shouldReconnectRef.current = true;
+    reconnectAttemptsRef.current = 0;
+    recognitionStartedRef.current = false;
+    isPausedRef.current = false;
+
+    lastAudioEndRef.current = null;
+    lastWallTimeRef.current = null;
+
+    setSegments([]);
+    segmentsRef.current = [];
+    setPartial("");
+    setElapsedSec(0);
+    elapsedRef.current = 0;
+    sessionStreamingSecRef.current = 0;
+    sessionStartRef.current = Date.now();
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: CONFIG.SAMPLE_RATE,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+
+      const audioCtx = new AudioContext({ sampleRate: CONFIG.SAMPLE_RATE });
+      audioCtxRef.current = audioCtx;
+
+      await audioCtx.audioWorklet.addModule("/audio-worklet-processor.js");
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      sourceNodeRef.current = source;
+
+      const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
+      workletNodeRef.current = worklet;
+
+      const zeroGain = audioCtx.createGain();
+      zeroGain.gain.value = 0;
+      zeroGainRef.current = zeroGain;
+
+      source.connect(worklet);
+      worklet.connect(zeroGain);
+      zeroGain.connect(audioCtx.destination);
+
+      worklet.port.onmessage = (e: MessageEvent) => {
+        const float32: Float32Array = e.data;
+
+        // Update waveform
+        let sum = 0;
+        for (let i = 0; i < float32.length; i++) {
+          sum += float32[i] * float32[i];
+        }
+        const rms = Math.sqrt(sum / float32.length);
+        waveformData.current.push(rms);
+        if (waveformData.current.length > 48) {
+          waveformData.current.shift();
+        }
+
+        // Send audio only when recording (not paused) and WS is open
+        if (
+          !isPausedRef.current &&
+          recognitionStartedRef.current &&
+          wsRef.current?.readyState === WebSocket.OPEN
+        ) {
+          const pcm16 = float32ToInt16(float32);
+          wsRef.current.send(pcm16);
+        }
+      };
+
+      await connectWebSocket();
+
+      // Start elapsed time tracker (counts wall time for display)
+      timerRef.current = setInterval(() => {
+        elapsedRef.current += 1;
+        setElapsedSec(elapsedRef.current);
+      }, 1000);
+
+      // Start streaming seconds tracker (counts actual streaming time for billing)
+      streamingTimerRef.current = setInterval(() => {
+        if (!isPausedRef.current && recognitionStartedRef.current) {
+          sessionStreamingSecRef.current += 1;
+        }
+      }, 1000);
+    } catch (err: any) {
+      setStatusText(`Error: ${err.message}`);
+      setStatusKind("error");
+      setRecState("idle");
+      shouldReconnectRef.current = false;
+      teardown();
+    }
+  }, [recState, connectWebSocket]);
+
+  // ============================================================
+  // Pause / Resume
+  // ============================================================
+
+  const pauseRecording = useCallback(() => {
+    if (recState !== "recording") return;
+    isPausedRef.current = true;
+    setRecState("paused");
+    setStatusText("Paused");
+    setStatusKind("paused");
+
+    // Stop the source node — audio capture halts, worklet receives no input
+    if (sourceNodeRef.current) {
+      try { sourceNodeRef.current.disconnect(); } catch {}
+    }
+  }, [recState]);
+
+  const resumeRecording = useCallback(() => {
+    if (recState !== "paused") return;
+    isPausedRef.current = false;
+
+    // Reconnect source node to resume audio capture
+    if (sourceNodeRef.current && workletNodeRef.current && audioCtxRef.current) {
+      try {
+        sourceNodeRef.current.connect(workletNodeRef.current);
+      } catch {
+        // If reconnect fails, try recreating the source from the existing stream
+        if (mediaStreamRef.current && audioCtxRef.current) {
+          try {
+            const newSource = audioCtxRef.current.createMediaStreamSource(mediaStreamRef.current);
+            sourceNodeRef.current = newSource;
+            newSource.connect(workletNodeRef.current!);
+          } catch {}
+        }
+      }
+    }
+
+    // If WebSocket closed during pause, reconnect
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setStatusText("Reconnecting...");
+      setStatusKind("connecting");
+      connectWebSocket();
+    } else {
+      setStatusText("Recording");
+      setStatusKind("active");
+    }
+
+    setRecState("recording");
+  }, [recState, connectWebSocket]);
+
+  // ============================================================
+  // Stop + teardown
+  // ============================================================
+
+  const teardown = useCallback(() => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+
+    if (wsRef.current) {
+      try {
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ message: "EndOfStream" }));
+        }
+      } catch {}
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
+    if (sourceNodeRef.current) { try { sourceNodeRef.current.disconnect(); } catch {} sourceNodeRef.current = null; }
+    if (workletNodeRef.current) { try { workletNodeRef.current.disconnect(); } catch {} workletNodeRef.current = null; }
+    if (zeroGainRef.current) { try { zeroGainRef.current.disconnect(); } catch {} zeroGainRef.current = null; }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+
+    recognitionStartedRef.current = false;
+  }, []);
+
+  const stopRecording = useCallback(() => {
+    shouldReconnectRef.current = false;
+    const streamingSec = sessionStreamingSecRef.current;
+    teardown();
+    setRecState("idle");
+    setStatusText("Stopped");
+    setStatusKind("idle");
+    setPartial("");
+
+    // Save to history
+    const currentSegments = segmentsRef.current;
+    if (currentSegments.length > 0) {
+      const exportText = buildExportText(currentSegments);
+      const preview = currentSegments
+        .map((s) => s.transcript)
+        .join(" ")
+        .slice(0, 120);
+      const record: SessionRecord = {
+        id: `session-${Date.now()}`,
+        date: new Date().toISOString(),
+        durationSec: streamingSec,
+        segmentCount: currentSegments.length,
+        preview: preview || "(empty session)",
+        exportText,
+      };
+      const updated = saveSession(record);
+      setHistory(updated);
+    }
+
+    // Update monthly usage with actual streaming seconds
+    if (streamingSec > 0) {
+      addToMonthlySeconds(streamingSec);
+    }
+    setUsageStats(getUsageStats(0));
+  }, [teardown]);
+
+  // ============================================================
+  // Copy transcript
+  // ============================================================
+
+  const copyTranscript = useCallback(async () => {
+    const text = buildExportText(segmentsRef.current);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  }, []);
+
+  // ============================================================
+  // History handlers
+  // ============================================================
+
+  const handleDeleteHistory = useCallback((id: string) => {
+    const updated = deleteSession(id);
+    setHistory(updated);
+  }, []);
+
+  // ============================================================
+  // Scroll tracking
+  // ============================================================
+
+  const handleScroll = useCallback(() => {
+    const el = pageScrollRef.current;
+    if (!el) return;
+    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  }, []);
+
+  // ============================================================
+  // Update usage stats periodically while recording
+  // ============================================================
+
+  useEffect(() => {
+    if (recState === "recording" || recState === "paused") {
+      const interval = setInterval(() => {
+        setUsageStats(getUsageStats(sessionStreamingSecRef.current));
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [recState]);
+
+  // ============================================================
+  // Render
+  // ============================================================
+
+  const isRecording = recState === "recording";
+  const isPaused = recState === "paused";
+  const isConnecting = recState === "connecting";
+  const isBusy = isConnecting || isRecording || isPaused;
+  const sessionMin = (elapsedSec / 60).toFixed(1);
+
+  return (
+    <div className="app">
+      {/* ===== Control Rail ===== */}
+      <div className="rail">
+        <div className="rail-brand">
+          <span className="rail-brand-mark">م</span>
+          <span className="rail-brand-text">Marqad</span>
+        </div>
+
+        <div className="rail-controls">
+          {/* Mic / Start button with accidental-start prevention */}
+          {recState === "idle" ? (
+            <button
+              className={`mic-btn ${armed ? "armed" : ""}`}
+              onClick={armed ? confirmStart : armStart}
+              aria-label={armed ? "Confirm start recording" : "Start recording"}
+              title={armed ? "Click again to confirm" : "Start recording"}
+            >
+              {armed ? "●" : "○"}
+            </button>
+          ) : (
+            <button
+              className="mic-btn recording"
+              onClick={stopRecording}
+              aria-label="Stop recording"
+              title="Stop recording"
+            >
+              ■
+            </button>
+          )}
+
+          {/* Pause/Resume button */}
+          {(isRecording || isPaused) && (
+            <button
+              className={`pause-btn ${isPaused ? "resumed" : ""}`}
+              onClick={isPaused ? resumeRecording : pauseRecording}
+              aria-label={isPaused ? "Resume recording" : "Pause recording"}
+              title={isPaused ? "Resume" : "Pause"}
+            >
+              {isPaused ? "▶" : "⏸"}
+            </button>
+          )}
+
+          <div className="waveform">
+            <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+          </div>
+
+          <div className={`status ${statusKind}`}>
+            <span className="status-dot" />
+            {statusText}
+          </div>
+        </div>
+
+        <div className="rail-spacer" />
+
+        <div className="rail-right">
+          <UsageBar stats={usageStats || getUsageStats(0)} />
+
+          <select
+            className="format-select"
+            value={format}
+            onChange={(e) => setFormat(e.target.value as ViewFormat)}
+            aria-label="View format"
+          >
+            <option value="prose">Prose</option>
+            <option value="dialogue">Dialogue</option>
+            <option value="notes">Notes</option>
+          </select>
+
+          <button
+            className="history-btn"
+            onClick={() => setHistoryOpen(true)}
+            aria-label="History"
+            title="Session history"
+          >
+            <span className="history-icon">⏷</span>
+            <span className="history-count">{history.length}</span>
+          </button>
+
+          <button
+            className={`copy-btn ${copied ? "copied" : ""}`}
+            onClick={copyTranscript}
+            disabled={segments.length === 0}
+          >
+            {copied ? "✓ Copied" : "Copy"}
+          </button>
+        </div>
+      </div>
+
+      {/* ===== Paper Page ===== */}
+      <div className="page-scroll" ref={pageScrollRef} onScroll={handleScroll}>
+        <div className="page">
+          {segments.length === 0 && !partial && (
+            <div className="empty-state">
+              <div className="empty-state-icon">م</div>
+              <div className="empty-state-text">
+                Press the microphone button to begin transcribing.
+              </div>
+              <div className="empty-state-hint">
+                Arabic-English bilingual · Speaker diarization · Live transcription
+              </div>
+            </div>
+          )}
+
+          {segments.map((seg, i) => (
+            <SegmentView
+              key={seg.id}
+              segment={seg}
+              format={format}
+              prevSpeaker={i > 0 ? segments[i - 1].speaker : null}
+            />
+          ))}
+
+          {partial && <span className="interim"> {partial}</span>}
+        </div>
+      </div>
+
+      {/* ===== History Panel ===== */}
+      <HistoryPanel
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        history={history}
+        onDelete={handleDeleteHistory}
+        onView={() => {}}
+      />
+    </div>
+  );
+}

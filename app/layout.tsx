@@ -1,0 +1,57 @@
+import type { Metadata, Viewport } from "next";
+import { Fraunces, Amiri, JetBrains_Mono } from "next/font/google";
+import "./globals.css";
+
+const fraunces = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-fraunces",
+  display: "swap",
+});
+
+const amiri = Amiri({
+  weight: ["400", "700"],
+  subsets: ["arabic", "latin"],
+  variable: "--font-amiri",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains",
+  display: "swap",
+});
+
+export const metadata: Metadata = {
+  title: "Marqad",
+  description: "Live classroom transcription for Arabic/English code-switched speech",
+  manifest: "/manifest.json",
+  icons: {
+    icon: "/icon.svg",
+    apple: "/icon.svg",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Marqad",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#111310",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+};
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <html lang="en" className={`${fraunces.variable} ${amiri.variable} ${jetbrainsMono.variable}`}>
+      <body>{children}</body>
+    </html>
+  );
+}
