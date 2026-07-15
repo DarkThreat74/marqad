@@ -44,11 +44,10 @@ function renderWords(seg: Segment): React.ReactNode[] {
       if (/[.!?؟。]/.test(w.content)) sentenceInitial = true;
       continue;
     }
+    // Always add a space before a word unless it's the very first token.
+    // This fixes: "word.word" → "word. word" and Arabic word concatenation.
     if (nodes.length > 0) {
-      const prev = seg.words[i - 1];
-      if (!prev || prev.type !== "punctuation") {
-        nodes.push(<span key={`sp-${i}`}> </span>);
-      }
+      nodes.push(<span key={`sp-${i}`}> </span>);
     }
     const classes = classifyWord(w, sentenceInitial);
     nodes.push(
@@ -559,14 +558,56 @@ export default function Marqad() {
     }
 
     if (words.length === 0 && transcript) {
-      words.push({
-        content: transcript,
-        speaker: primarySpeaker,
-        language: isArabicText(transcript) ? "ar" : "en",
-        direction: isArabicText(transcript) ? "rtl" : "ltr",
-        confidence: 0,
-        type: "word",
-      });
+      // Speechmatics sometimes returns the transcript as a single string
+      // without word-level results. Split by spaces to create individual
+      // word tokens so they render with proper spacing.
+      // Also handle the case where Arabic words are concatenated without
+      // spaces — we can't fix that here (it's in Speechmatics' output),
+      // but splitting by spaces at least handles the normal case.
+      const parts = transcript.split(/(\s+)/).filter((s) => s.length > 0);
+      for (const part of parts) {
+        if (/^\s+$/.test(part)) {
+          words.push({
+            content: part,
+            speaker: primarySpeaker,
+            language: "",
+            direction: "ltr",
+            confidence: 0,
+            type: "spacing",
+          });
+        } else if (/^[.,!?;:؟،'"—\-–]+$/.test(part)) {
+          words.push({
+            content: part,
+            speaker: primarySpeaker,
+            language: "",
+            direction: "ltr",
+            confidence: 0,
+            type: "punctuation",
+          });
+        } else {
+          const isAr = isArabicText(part);
+          words.push({
+            content: part,
+            speaker: primarySpeaker,
+            language: isAr ? "ar" : "en",
+            direction: isAr ? "rtl" : "ltr",
+            confidence: 0,
+            type: "word",
+          });
+        }
+      }
+      // Fallback if splitting produced nothing useful
+      if (words.length === 0) {
+        const isAr = isArabicText(transcript);
+        words.push({
+          content: transcript,
+          speaker: primarySpeaker,
+          language: isAr ? "ar" : "en",
+          direction: isAr ? "rtl" : "ltr",
+          confidence: 0,
+          type: "word",
+        });
+      }
     }
 
     const audioStart = metadata.start_time ?? 0;

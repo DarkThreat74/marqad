@@ -205,14 +205,17 @@ export function classifyWord(
 }
 
 // ===== Pause-driven spacing (Section 3.4) =====
+// Thresholds tuned for classroom speech — normal speaking pauses
+// (1-2 seconds) should NOT create visual breaks. Only real pauses
+// (teacher stops to think, topic changes, turn changes) should.
 export function classifyPause(
   gapMs: number
 ): "none" | "comma" | "line" | "paragraph" | "divider" {
-  if (gapMs < 400) return "none";
-  if (gapMs < 1000) return "comma";
-  if (gapMs < 2200) return "line";
-  if (gapMs < 4500) return "paragraph";
-  return "divider";
+  if (gapMs < 2500) return "none";       // normal speech flow
+  if (gapMs < 5000) return "comma";       // sentence-ending pause
+  if (gapMs < 8000) return "line";        // noticeable break
+  if (gapMs < 15000) return "paragraph";  // topic change / turn change
+  return "divider";                        // real break, likely new section
 }
 
 // ===== Time formatting =====
