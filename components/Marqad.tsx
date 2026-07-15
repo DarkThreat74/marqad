@@ -431,6 +431,19 @@ export default function Marqad() {
     };
   }, [statusKind, statusText, recState]);
 
+  // Save usage on page close/unload (so partial session is counted)
+  useEffect(() => {
+    const handleUnload = () => {
+      const sec = sessionStreamingSecRef.current;
+      const remainder = sec % 10;
+      if (remainder > 0) {
+        addToMonthlySeconds(remainder);
+      }
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
+  }, []);
+
   // Register service worker — force update on every load
   useEffect(() => {
     if ("serviceWorker" in navigator) {
@@ -911,9 +924,15 @@ export default function Marqad() {
       }, 1000);
 
       // Start streaming seconds tracker (counts actual streaming time for billing)
+      // Saves to localStorage every 10 seconds so usage survives page crash/close
       streamingTimerRef.current = setInterval(() => {
         if (!isPausedRef.current && recognitionStartedRef.current) {
           sessionStreamingSecRef.current += 1;
+          // Save to localStorage every 10 seconds
+          if (sessionStreamingSecRef.current % 10 === 0) {
+            addToMonthlySeconds(10);
+            setUsageStats(getUsageStats(sessionStreamingSecRef.current));
+          }
         }
       }, 1000);
     } catch (err: any) {
@@ -1080,9 +1099,11 @@ export default function Marqad() {
       setHistory(updated);
     }
 
-    // Update monthly usage with actual streaming seconds
-    if (streamingSec > 0) {
-      addToMonthlySeconds(streamingSec);
+    // Update monthly usage — only the remainder since last 10-second save
+    // (the streaming timer already saves 10 seconds every 10 seconds during recording)
+    const remainder = streamingSec % 10;
+    if (remainder > 0) {
+      addToMonthlySeconds(remainder);
     }
     setUsageStats(getUsageStats(0));
   }, [teardown]);
