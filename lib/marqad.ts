@@ -9,8 +9,14 @@
 // Ideal when transcribing Arabic and English in the same media file or
 // stream." WebSocket URL format verified: language is a path segment,
 // host is `us.rt` (not the legacy `eu2.rt` in the spec).
+//
+// TOKEN_ENDPOINT falls back to the hardcoded project URL so the app
+// works even if the env var isn't set on Vercel. This URL is not a
+// secret — it's a public Edge Function endpoint with no caller auth.
 export const CONFIG = {
-  TOKEN_ENDPOINT: process.env.NEXT_PUBLIC_SPEECHMATICS_TOKEN_ENDPOINT || "",
+  TOKEN_ENDPOINT:
+    process.env.NEXT_PUBLIC_SPEECHMATICS_TOKEN_ENDPOINT ||
+    "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/get-speechmatics-token",
   WS_HOST: "wss://us.rt.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,

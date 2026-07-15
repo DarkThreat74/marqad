@@ -606,6 +606,9 @@ export default function Marqad() {
 
     let jwt: string;
     try {
+      if (!CONFIG.TOKEN_ENDPOINT || !CONFIG.TOKEN_ENDPOINT.startsWith("https://")) {
+        throw new Error("Token endpoint not configured");
+      }
       const resp = await fetch(CONFIG.TOKEN_ENDPOINT);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
@@ -616,7 +619,10 @@ export default function Marqad() {
       jwt = data.jwt;
       if (!jwt) throw new Error("No jwt in response");
     } catch (err: any) {
-      setStatusText(`Token error: ${err.message}`);
+      const msg = err.message.includes("DOCTYPE") || err.message.includes("valid JSON")
+        ? "Token endpoint returned HTML, not JSON — check the Edge Function is deployed"
+        : `Token error: ${err.message}`;
+      setStatusText(msg);
       setStatusKind("error");
       setRecState("idle");
       return false;
