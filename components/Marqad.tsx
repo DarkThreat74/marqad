@@ -930,8 +930,31 @@ export default function Marqad() {
     lastAudioEndRef.current = null;
     lastWallTimeRef.current = null;
 
-    setSegments([]);
-    segmentsRef.current = [];
+    // If viewing a past session, load its segments so we can continue recording
+    // into it. Otherwise start fresh.
+    if (viewingRecord) {
+      // Parse the viewing record's export text back into segments
+      // (simplified — just keep the text as a single segment for context)
+      const existingSeg: Segment = {
+        id: `prev-${Date.now()}`,
+        words: [],
+        transcript: viewingRecord.exportText,
+        speaker: "S1",
+        audioStart: 0,
+        audioEnd: 0,
+        wallTime: Date.now(),
+        spacing: "none",
+      };
+      setSegments([existingSeg]);
+      segmentsRef.current = [existingSeg];
+      // Exit viewing mode — we're now recording
+      setViewingRecord(null);
+      setEditText("");
+      setEditDirty(false);
+    } else {
+      setSegments([]);
+      segmentsRef.current = [];
+    }
     setPartial("");
     setElapsedSec(0);
     elapsedRef.current = 0;
@@ -1033,7 +1056,7 @@ export default function Marqad() {
       shouldReconnectRef.current = false;
       teardown();
     }
-  }, [recState, connectWebSocket]);
+  }, [recState, connectWebSocket, viewingRecord]);
 
   // ============================================================
   // Pause / Resume
@@ -1434,19 +1457,27 @@ export default function Marqad() {
           {viewingRecord ? (
             <>
               <button
-                className="new-session-btn"
-                onClick={handleNewSession}
-                aria-label="Start new session"
-                title="Start new session"
-              >
-                + New
-              </button>
-              <button
                 className={`copy-btn ${editSaved ? "copied" : ""}`}
                 onClick={handleSaveEdit}
                 disabled={!editDirty}
               >
                 {editSaved ? "✓ Saved" : "Save"}
+              </button>
+              <button
+                className="history-text-btn"
+                onClick={() => setHistoryOpen(true)}
+                aria-label="History"
+                title="Session history"
+              >
+                History
+              </button>
+              <button
+                className="new-session-btn"
+                onClick={handleNewSession}
+                aria-label="Start new session"
+                title="Clear and start fresh"
+              >
+                + New
               </button>
             </>
           ) : (
