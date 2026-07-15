@@ -516,6 +516,21 @@ export default function Marqad() {
         const seg = parseTranscript(msg);
         if (seg) {
           setSegments((prev) => {
+            // Merge with the last segment if same speaker and no significant pause.
+            // Speechmatics sends many small AddTranscript messages (1-2 words each),
+            // so we accumulate them into one segment per speaker turn.
+            const last = prev[prev.length - 1];
+            if (last && last.speaker === seg.speaker && seg.spacing === "none") {
+              const merged: Segment = {
+                ...last,
+                words: [...last.words, ...seg.words],
+                transcript: last.transcript + seg.transcript,
+                audioEnd: seg.audioEnd,
+              };
+              const next = [...prev.slice(0, -1), merged];
+              segmentsRef.current = next;
+              return next;
+            }
             const next = [...prev, seg];
             segmentsRef.current = next;
             return next;
