@@ -363,6 +363,7 @@ export default function Marqad() {
   const [editSaved, setEditSaved] = useState(false);
   const [liveEditMode, setLiveEditMode] = useState(false); // edit live transcript
   const [liveEditText, setLiveEditText] = useState("");
+  const [isOnline, setIsOnline] = useState(true);
 
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
@@ -402,6 +403,33 @@ export default function Marqad() {
     setHistory(loadHistory());
     setUsageStats(getUsageStats(0));
   }, []);
+
+  // Online/offline detection
+  useEffect(() => {
+    const updateOnline = () => {
+      const online = navigator.onLine;
+      setIsOnline(online);
+      if (!online) {
+        setStatusText("You're offline — check your internet connection");
+        setStatusKind("error");
+      } else if (statusKind === "error" && statusText.includes("offline")) {
+        setStatusText("Back online");
+        setStatusKind("idle");
+        setTimeout(() => {
+          if (recState === "idle") {
+            setStatusText("Ready");
+          }
+        }, 2000);
+      }
+    };
+    window.addEventListener("online", updateOnline);
+    window.addEventListener("offline", updateOnline);
+    setIsOnline(navigator.onLine);
+    return () => {
+      window.removeEventListener("online", updateOnline);
+      window.removeEventListener("offline", updateOnline);
+    };
+  }, [statusKind, statusText, recState]);
 
   // Register service worker — force update on every load
   useEffect(() => {
@@ -684,6 +712,9 @@ export default function Marqad() {
 
     let jwt: string;
     try {
+      if (!navigator.onLine) {
+        throw new Error("You're offline — check your internet connection");
+      }
       if (!CONFIG.TOKEN_ENDPOINT || !CONFIG.TOKEN_ENDPOINT.startsWith("https://")) {
         throw new Error("Token endpoint not configured");
       }
@@ -697,9 +728,16 @@ export default function Marqad() {
       jwt = data.jwt;
       if (!jwt) throw new Error("No jwt in response");
     } catch (err: any) {
-      const msg = err.message.includes("DOCTYPE") || err.message.includes("valid JSON")
-        ? "Token endpoint returned HTML, not JSON — check the Edge Function is deployed"
-        : `Token error: ${err.message}`;
+      let msg: string;
+      if (!navigator.onLine || err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
+        msg = "You're offline — check your internet connection";
+      } else if (err.message.includes("DOCTYPE") || err.message.includes("valid JSON")) {
+        msg = "Token endpoint returned HTML, not JSON — check the Edge Function is deployed";
+      } else if (err.message.includes("Server missing SPEECHMATICS_API_KEY")) {
+        msg = "Speechmatics API key not set — run supabase secrets set";
+      } else {
+        msg = `Token error: ${err.message}`;
+      }
       setStatusText(msg);
       setStatusKind("error");
       setRecState("idle");
@@ -722,7 +760,11 @@ export default function Marqad() {
     ws.onmessage = handleWsMessage;
 
     ws.onerror = () => {
-      setStatusText("Connection error");
+      if (!navigator.onLine) {
+        setStatusText("You're offline — transcription paused");
+      } else {
+        setStatusText("Connection error to Speechmatics — will retry");
+      }
       setStatusKind("error");
     };
 
@@ -769,6 +811,13 @@ export default function Marqad() {
     setArmed(false);
 
     if (recState !== "idle") return;
+
+    // Block start if offline
+    if (!navigator.onLine) {
+      setStatusText("You're offline — check your internet connection");
+      setStatusKind("error");
+      return;
+    }
 
     // Gap 3 fix: block start if free tier is exhausted
     const stats = getUsageStats(0);
@@ -868,7 +917,19 @@ export default function Marqad() {
         }
       }, 1000);
     } catch (err: any) {
-      setStatusText(`Error: ${err.message}`);
+      let msg: string;
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        msg = "Microphone access denied — allow mic permission in your browser";
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        msg = "No microphone found — connect a mic and try again";
+      } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+        msg = "Microphone is in use by another app — close it and try again";
+      } else if (!navigator.onLine) {
+        msg = "You're offline — check your internet connection";
+      } else {
+        msg = `Microphone error: ${err.message || err.name}`;
+      }
+      setStatusText(msg);
       setStatusKind("error");
       setRecState("idle");
       shouldReconnectRef.current = false;
@@ -1350,6 +1411,13 @@ export default function Marqad() {
           )}
         </div>
       </div>
+
+      {/* ===== Offline banner ===== */}
+      {!isOnline && (
+        <div className="tier-banner tier-banner-error">
+          You're offline — transcription won't work until you reconnect
+        </div>
+      )}
 
       {/* ===== Free tier warning banner (gap 3 fix) ===== */}
       {usageStats?.isOverLimit && (
