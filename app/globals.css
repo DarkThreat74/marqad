@@ -696,18 +696,28 @@ html, body {
   align-items: center;
 }
 
-/* Notes view */
+/* Notes view — bullet-style, compact, no timestamps */
 .notes-block {
-  margin-bottom: 1.3em;
+  margin-bottom: 1em;
+  padding-left: 16px;
+  border-left: 2px solid rgba(107, 114, 128, 0.15);
 }
 
 .notes-header {
   font-family: var(--font-chrome);
-  font-size: 11px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--paper-muted);
-  margin-bottom: 5px;
+  margin-bottom: 4px;
   display: flex;
   align-items: center;
+  gap: 6px;
+}
+
+.notes-text {
+  font-size: 16px;
+  line-height: 1.7;
 }
 
 /* ============================================================

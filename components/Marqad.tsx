@@ -86,15 +86,15 @@ const SegmentView = memo(function SegmentView({
   }
 
   if (format === "notes") {
+    // Notes mode: bullet-style, no timestamp, more compact.
+    // Designed for quick scanning — just speaker + text, indented.
     return (
       <div className="notes-block">
         <div className="notes-header">
           <span className="speaker-swatch" style={{ background: color }} />
-          <span className="speaker-label">
-            Speaker {segment.speaker} · {formatTimestamp(segment.audioStart)}
-          </span>
+          <span className="speaker-label">Speaker {segment.speaker}</span>
         </div>
-        <span>{renderWords(segment)}</span>
+        <div className="notes-text">{renderWords(segment)}</div>
       </div>
     );
   }
@@ -516,11 +516,12 @@ export default function Marqad() {
         const seg = parseTranscript(msg);
         if (seg) {
           setSegments((prev) => {
-            // Merge with the last segment if same speaker and no significant pause.
-            // Speechmatics sends many small AddTranscript messages (1-2 words each),
+            // Always merge consecutive same-speaker segments.
+            // Speechmatics sends many tiny AddTranscript messages (1-2 words each),
             // so we accumulate them into one segment per speaker turn.
+            // A new segment is only created when the speaker changes.
             const last = prev[prev.length - 1];
-            if (last && last.speaker === seg.speaker && seg.spacing === "none") {
+            if (last && last.speaker === seg.speaker) {
               const merged: Segment = {
                 ...last,
                 words: [...last.words, ...seg.words],
