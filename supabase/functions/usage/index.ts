@@ -80,8 +80,6 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ seconds: newSeconds || addSeconds, monthKey }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
-        );
-      }
     }
 
     return new Response(
