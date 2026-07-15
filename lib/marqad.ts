@@ -20,8 +20,8 @@ export const CONFIG = {
   WS_HOST: "wss://us.rt.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
-  MAX_DELAY: 0.7,
-  AUDIO_CHUNK_SIZE: 4096,
+  MAX_DELAY: 0.3, // reduced from 0.7 for faster response on language switches
+  AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
 
 // ===== Types =====
@@ -245,11 +245,15 @@ export function buildStartRecognition(): string {
     message: "StartRecognition",
     transcription_config: {
       language: CONFIG.LANGUAGE,
-      model: "enhanced", // current field name (operating_point is deprecated)
+      model: "enhanced",
       enable_partials: true,
       max_delay: CONFIG.MAX_DELAY,
       diarization: "speaker",
-      // max_speakers omitted — let the model auto-detect (per spec Section 3.6)
+      // Disable auto-punctuation — Speechmatics inserts false periods
+      // where there are no pauses. We handle spacing via pause detection.
+      punctuation_overrides: {
+        enabled: false,
+      },
     },
     audio_format: {
       type: "raw",
@@ -339,31 +343,81 @@ export function clearHistory(): void {
 // Monthly Usage Tracking (Section 3.7 — free tier calculator)
 // Free tier: 3,000 minutes/month, 2 concurrent real-time sessions
 // Tracks ACTUAL streaming seconds (excludes paused time).
+// Stored in Supabase database via edge function (not localStorage).
 // ============================================================
 
 export const FREE_TIER_MINUTES = 3000;
+
+const USAGE_ENDPOINT =
+  process.env.NEXT_PUBLIC_SUPABASE_URL
+    ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/usage`
+    : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/usage";
+
+// In-memory cache — synced with database
+let cachedSeconds: number | null = null;
 
 function getMonthlyKey(): string {
   const now = new Date();
   return `marqad-usage-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+// Load from database (async) — also caches locally as fallback
+export async function loadMonthlySecondsFromDB(): Promise<number> {
+  if (typeof window === "undefined") return 0;
+  try {
+    const resp = await fetch(USAGE_ENDPOINT, { method: "GET" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const seconds = data.seconds || 0;
+    cachedSeconds = seconds;
+    // Also save to localStorage as fallback
+    try { localStorage.setItem(getMonthlyKey(), String(seconds)); } catch {}
+    return seconds;
+  } catch {
+    // Fallback to localStorage if database is unreachable
+    const val = localStorage.getItem(getMonthlyKey());
+    const seconds = val ? parseFloat(val) : 0;
+    cachedSeconds = seconds;
+    return seconds;
+  }
+}
+
+// Sync version — uses cached value or localStorage fallback
 export function loadMonthlySeconds(): number {
   if (typeof window === "undefined") return 0;
+  if (cachedSeconds !== null) return cachedSeconds;
   const val = localStorage.getItem(getMonthlyKey());
   return val ? parseFloat(val) : 0;
 }
 
-export function saveMonthlySeconds(seconds: number): void {
+// Add seconds to database (async, fire-and-forget)
+export async function addToMonthlySecondsDB(seconds: number): Promise<number> {
+  if (typeof window === "undefined" || seconds <= 0) return loadMonthlySeconds();
   try {
-    localStorage.setItem(getMonthlyKey(), String(seconds));
-  } catch {}
+    const resp = await fetch(USAGE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const newSeconds = data.seconds || 0;
+    cachedSeconds = newSeconds;
+    // Also save to localStorage as fallback
+    try { localStorage.setItem(getMonthlyKey(), String(newSeconds)); } catch {}
+    return newSeconds;
+  } catch {
+    // Fallback to localStorage if database is unreachable
+    return addToMonthlySeconds(seconds);
+  }
 }
 
+// Local fallback (localStorage only)
 export function addToMonthlySeconds(seconds: number): number {
   const current = loadMonthlySeconds();
   const updated = current + seconds;
-  saveMonthlySeconds(updated);
+  try { localStorage.setItem(getMonthlyKey(), String(updated)); } catch {}
+  cachedSeconds = updated;
   return updated;
 }
 

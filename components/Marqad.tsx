@@ -16,11 +16,14 @@ import {
   buildStartRecognition,
   buildExportText,
   isArabicText,
+  isArabicWord,
   loadHistory,
   saveSession,
   deleteSession,
   getUsageStats,
   addToMonthlySeconds,
+  addToMonthlySecondsDB,
+  loadMonthlySecondsFromDB,
   loadMonthlySeconds,
   exportHistoryJSON,
   importHistoryJSON,
@@ -33,29 +36,86 @@ import {
 function renderWords(seg: Segment): React.ReactNode[] {
   const nodes: React.ReactNode[] = [];
   let sentenceInitial = true;
-  for (let i = 0; i < seg.words.length; i++) {
+  let i = 0;
+  let nodeIdx = 0;
+
+  while (i < seg.words.length) {
     const w = seg.words[i];
+
     if (w.type === "spacing") {
-      nodes.push(<span key={i}> </span>);
+      nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
+      i++;
       continue;
     }
+
     if (w.type === "punctuation") {
-      nodes.push(<span key={i}>{w.content}</span>);
+      nodes.push(<span key={`p-${nodeIdx++}`}>{w.content}</span>);
       if (/[.!?؟。]/.test(w.content)) sentenceInitial = true;
+      i++;
       continue;
     }
-    // Always add a space before a word unless it's the very first token.
-    // This fixes: "word.word" → "word. word" and Arabic word concatenation.
-    if (nodes.length > 0) {
-      nodes.push(<span key={`sp-${i}`}> </span>);
+
+    // Check if this word starts an Arabic run
+    if (isArabicWord(w)) {
+      // Collect all consecutive Arabic words into one RTL span
+      const arabicWords: WordToken[] = [];
+      while (i < seg.words.length) {
+        const cw = seg.words[i];
+        if (cw.type === "spacing") {
+          // Include the space in the Arabic run if the next word is also Arabic
+          if (i + 1 < seg.words.length && isArabicWord(seg.words[i + 1])) {
+            arabicWords.push(cw);
+            i++;
+            continue;
+          }
+          break;
+        }
+        if (cw.type === "punctuation") {
+          // Include punctuation in the Arabic run if followed by more Arabic
+          if (i + 1 < seg.words.length && isArabicWord(seg.words[i + 1])) {
+            arabicWords.push(cw);
+            i++;
+            continue;
+          }
+          break;
+        }
+        if (isArabicWord(cw)) {
+          arabicWords.push(cw);
+          i++;
+        } else {
+          break;
+        }
+      }
+
+      // Add space before the Arabic run if not the first node
+      if (nodes.length > 0) {
+        nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
+      }
+
+      // Render the Arabic run as a single RTL span
+      const arabicContent = arabicWords
+        .map((aw) => aw.content)
+        .join(" ");
+      nodes.push(
+        <span key={`ar-${nodeIdx++}`} className="arabic" dir="rtl">
+          {arabicContent}
+        </span>
+      );
+      sentenceInitial = false;
+    } else {
+      // English/Latin word
+      if (nodes.length > 0) {
+        nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
+      }
+      const classes = classifyWord(w, sentenceInitial);
+      nodes.push(
+        <span key={`w-${nodeIdx++}`} className={classes.join(" ")}>
+          {w.content}
+        </span>
+      );
+      sentenceInitial = false;
+      i++;
     }
-    const classes = classifyWord(w, sentenceInitial);
-    nodes.push(
-      <span key={i} className={classes.join(" ")}>
-        {w.content}
-      </span>
-    );
-    sentenceInitial = false;
   }
   return nodes;
 }
@@ -401,7 +461,10 @@ export default function Marqad() {
   // Load history + usage on mount
   useEffect(() => {
     setHistory(loadHistory());
-    setUsageStats(getUsageStats(0));
+    // Load usage from database (async)
+    loadMonthlySecondsFromDB().then(() => {
+      setUsageStats(getUsageStats(0));
+    });
   }, []);
 
   // Online/offline detection
@@ -437,7 +500,15 @@ export default function Marqad() {
       const sec = sessionStreamingSecRef.current;
       const remainder = sec % 10;
       if (remainder > 0) {
-        addToMonthlySeconds(remainder);
+        // Use sendBeacon for fire-and-forget on page unload
+        try {
+          const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+            ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/usage`
+            : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/usage";
+          navigator.sendBeacon(url, JSON.stringify({ seconds: remainder }));
+        } catch {
+          addToMonthlySeconds(remainder);
+        }
       }
     };
     window.addEventListener("beforeunload", handleUnload);
@@ -556,13 +627,17 @@ export default function Marqad() {
         break;
 
       case "AddPartialTranscript":
+        // Clear any previous partial and show the new one
         if (msg.metadata?.transcript) {
           setPartial(msg.metadata.transcript);
+        } else {
+          setPartial("");
         }
         break;
 
       case "AddTranscript": {
-        setPartial("");
+        // Don't clear partial immediately — keep it until the next partial
+        // arrives to avoid a flash of empty text during language switches
         const seg = parseTranscript(msg);
         if (seg) {
           setSegments((prev) => {
@@ -627,6 +702,10 @@ export default function Marqad() {
       const direction: "ltr" | "rtl" =
         alt.direction || (language.startsWith("ar") ? "rtl" : "ltr");
       const confidence = alt.confidence || 0;
+
+      // Strip punctuation — we handle spacing via pause detection, not
+      // Speechmatics' auto-punctuation (which inserts false periods)
+      if (type === "punctuation") continue;
 
       words.push({ content, speaker, language, direction, confidence, type });
 
@@ -924,13 +1003,13 @@ export default function Marqad() {
       }, 1000);
 
       // Start streaming seconds tracker (counts actual streaming time for billing)
-      // Saves to localStorage every 10 seconds so usage survives page crash/close
+      // Saves to database every 10 seconds so usage survives page crash/close
       streamingTimerRef.current = setInterval(() => {
         if (!isPausedRef.current && recognitionStartedRef.current) {
           sessionStreamingSecRef.current += 1;
-          // Save to localStorage every 10 seconds
+          // Save to database every 10 seconds
           if (sessionStreamingSecRef.current % 10 === 0) {
-            addToMonthlySeconds(10);
+            addToMonthlySecondsDB(10);
             setUsageStats(getUsageStats(sessionStreamingSecRef.current));
           }
         }
@@ -1100,12 +1179,14 @@ export default function Marqad() {
     }
 
     // Update monthly usage — only the remainder since last 10-second save
-    // (the streaming timer already saves 10 seconds every 10 seconds during recording)
     const remainder = streamingSec % 10;
     if (remainder > 0) {
-      addToMonthlySeconds(remainder);
+      addToMonthlySecondsDB(remainder).then(() => {
+        setUsageStats(getUsageStats(0));
+      });
+    } else {
+      setUsageStats(getUsageStats(0));
     }
-    setUsageStats(getUsageStats(0));
   }, [teardown]);
 
   // ============================================================
