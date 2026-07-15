@@ -221,14 +221,22 @@ function HistoryPanel({
               {Math.round(viewing.durationSec / 60)} min ·{" "}
               {viewing.segmentCount} segments
             </div>
-            <button
-              className="copy-btn"
-              onClick={() => {
-                navigator.clipboard.writeText(viewing.exportText).catch(() => {});
-              }}
-            >
-              Copy transcript
-            </button>
+            <div className="history-viewer-actions">
+              <button
+                className="history-action-btn"
+                onClick={() => onView(viewing)}
+              >
+                Open in editor
+              </button>
+              <button
+                className="history-action-btn"
+                onClick={() => {
+                  navigator.clipboard.writeText(viewing.exportText).catch(() => {});
+                }}
+              >
+                Copy
+              </button>
+            </div>
             <pre className="history-viewer-text">{viewing.exportText}</pre>
           </div>
         ) : history.length === 0 ? (
@@ -239,7 +247,7 @@ function HistoryPanel({
               <div key={record.id} className="history-entry">
                 <div
                   className="history-entry-content"
-                  onClick={() => setViewing(record)}
+                  onClick={() => onView(record)}
                 >
                   <div className="history-entry-date">
                     {new Date(record.date).toLocaleDateString(undefined, {
@@ -349,6 +357,10 @@ export default function Marqad() {
   const [history, setHistory] = useState<SessionRecord[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [armed, setArmed] = useState(false); // accidental start prevention
+  const [viewingRecord, setViewingRecord] = useState<SessionRecord | null>(null);
+  const [editText, setEditText] = useState("");
+  const [editDirty, setEditDirty] = useState(false);
+  const [editSaved, setEditSaved] = useState(false);
 
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
@@ -1021,7 +1033,13 @@ export default function Marqad() {
   const handleDeleteHistory = useCallback((id: string) => {
     const updated = deleteSession(id);
     setHistory(updated);
-  }, []);
+    // If we're viewing the deleted session, close it
+    if (viewingRecord?.id === id) {
+      setViewingRecord(null);
+      setEditText("");
+      setEditDirty(false);
+    }
+  }, [viewingRecord]);
 
   const handleImportHistory = useCallback((json: string) => {
     try {
@@ -1031,6 +1049,52 @@ export default function Marqad() {
       // Error is handled in HistoryPanel via onImport throw
     }
   }, []);
+
+  // View a past session — loads it into the main transcript area (read-only)
+  const handleViewHistory = useCallback((record: SessionRecord) => {
+    setViewingRecord(record);
+    setEditText(record.exportText);
+    setEditDirty(false);
+    setEditSaved(false);
+    setHistoryOpen(false);
+    setPartial("");
+  }, []);
+
+  // Start a new session — clears the current transcript
+  const handleNewSession = useCallback(() => {
+    if (recState !== "idle") {
+      stopRecording();
+    }
+    setViewingRecord(null);
+    setEditText("");
+    setEditDirty(false);
+    setEditSaved(false);
+    setSegments([]);
+    segmentsRef.current = [];
+    setPartial("");
+    setElapsedSec(0);
+    setStatusText("Ready");
+    setStatusKind("idle");
+  }, [recState, stopRecording]);
+
+  // Save edited transcript as a new history entry
+  const handleSaveEdit = useCallback(() => {
+    if (!viewingRecord || !editDirty) return;
+    const newRecord: SessionRecord = {
+      id: `session-${Date.now()}`,
+      date: new Date().toISOString(),
+      durationSec: viewingRecord.durationSec,
+      segmentCount: viewingRecord.segmentCount,
+      preview: editText.slice(0, 120).replace(/\n/g, " "),
+      exportText: editText,
+    };
+    const updated = saveSession(newRecord);
+    setHistory(updated);
+    setViewingRecord(newRecord);
+    setEditDirty(false);
+    setEditSaved(true);
+    setTimeout(() => setEditSaved(false), 2000);
+  }, [viewingRecord, editDirty, editText]);
 
   // ============================================================
   // Scroll tracking
@@ -1148,34 +1212,56 @@ export default function Marqad() {
         <div className="rail-right">
           <UsageBar stats={usageStats || getUsageStats(0)} />
 
-          <select
-            className="format-select"
-            value={format}
-            onChange={(e) => setFormat(e.target.value as ViewFormat)}
-            aria-label="View format"
-          >
-            <option value="prose">Prose</option>
-            <option value="dialogue">Dialogue</option>
-            <option value="notes">Notes</option>
-          </select>
+          {viewingRecord ? (
+            <>
+              <button
+                className="new-session-btn"
+                onClick={handleNewSession}
+                aria-label="Start new session"
+                title="Start new session"
+              >
+                + New
+              </button>
+              <button
+                className={`copy-btn ${editSaved ? "copied" : ""}`}
+                onClick={handleSaveEdit}
+                disabled={!editDirty}
+              >
+                {editSaved ? "✓ Saved" : "Save"}
+              </button>
+            </>
+          ) : (
+            <>
+              <select
+                className="format-select"
+                value={format}
+                onChange={(e) => setFormat(e.target.value as ViewFormat)}
+                aria-label="View format"
+              >
+                <option value="prose">Prose</option>
+                <option value="dialogue">Dialogue</option>
+                <option value="notes">Notes</option>
+              </select>
 
-          <button
-            className="history-btn"
-            onClick={() => setHistoryOpen(true)}
-            aria-label="History"
-            title="Session history"
-          >
-            <span className="history-icon">⏷</span>
-            <span className="history-count">{history.length}</span>
-          </button>
+              <button
+                className="history-btn"
+                onClick={() => setHistoryOpen(true)}
+                aria-label="History"
+                title="Session history"
+              >
+                <span className="history-icon">⏷</span>
+                <span className="history-count">{history.length}</span>
+              </button>
 
-          <button
-            className={`copy-btn ${copied ? "copied" : ""}`}
-            onClick={copyTranscript}
-            disabled={segments.length === 0}
-          >
-            {copied ? "✓ Copied" : "Copy"}
-          </button>
+              <button
+                className={`copy-btn ${copied ? "copied" : ""}`}
+                onClick={copyTranscript}
+                disabled={segments.length === 0}
+              >
+                {copied ? "✓ Copied" : "Copy"}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1194,28 +1280,52 @@ export default function Marqad() {
       {/* ===== Paper Page ===== */}
       <div className="page-scroll" ref={pageScrollRef} onScroll={handleScroll}>
         <div className="page">
-          {segments.length === 0 && !partial && (
-            <div className="empty-state">
-              <div className="empty-state-icon">م</div>
-              <div className="empty-state-text">
-                Press the microphone button to begin transcribing.
+          {viewingRecord ? (
+            /* ===== Viewing mode: editable past session ===== */
+            <div className="viewing-mode">
+              <div className="viewing-meta">
+                {new Date(viewingRecord.date).toLocaleString()} ·{" "}
+                {Math.round(viewingRecord.durationSec / 60)} min ·{" "}
+                {viewingRecord.segmentCount} segments
+                {editDirty && <span className="edit-dirty"> · unsaved</span>}
               </div>
-              <div className="empty-state-hint">
-                Arabic-English bilingual · Speaker diarization · Live transcription
-              </div>
+              <textarea
+                className="edit-transcript"
+                value={editText}
+                onChange={(e) => {
+                  setEditText(e.target.value);
+                  setEditDirty(true);
+                }}
+                spellCheck={false}
+              />
             </div>
+          ) : (
+            /* ===== Live transcription mode ===== */
+            <>
+              {segments.length === 0 && !partial && (
+                <div className="empty-state">
+                  <div className="empty-state-icon">م</div>
+                  <div className="empty-state-text">
+                    Press the microphone button to begin transcribing.
+                  </div>
+                  <div className="empty-state-hint">
+                    Arabic-English bilingual · Speaker diarization · Live transcription
+                  </div>
+                </div>
+              )}
+
+              {segments.map((seg, i) => (
+                <SegmentView
+                  key={seg.id}
+                  segment={seg}
+                  format={format}
+                  prevSpeaker={i > 0 ? segments[i - 1].speaker : null}
+                />
+              ))}
+
+              {partial && <span className="interim"> {partial}</span>}
+            </>
           )}
-
-          {segments.map((seg, i) => (
-            <SegmentView
-              key={seg.id}
-              segment={seg}
-              format={format}
-              prevSpeaker={i > 0 ? segments[i - 1].speaker : null}
-            />
-          ))}
-
-          {partial && <span className="interim"> {partial}</span>}
         </div>
       </div>
 
@@ -1225,7 +1335,7 @@ export default function Marqad() {
         onClose={() => setHistoryOpen(false)}
         history={history}
         onDelete={handleDeleteHistory}
-        onView={() => {}}
+        onView={handleViewHistory}
         onImport={handleImportHistory}
       />
     </div>

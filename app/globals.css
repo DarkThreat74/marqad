@@ -948,6 +948,12 @@ html, body {
   margin-bottom: 12px;
 }
 
+.history-viewer-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .history-viewer-text {
   font-family: var(--font-chrome);
   font-size: 12px;
@@ -1041,6 +1047,79 @@ html, body {
     padding: 6px 10px;
     font-size: 10px;
   }
+}
+
+/* ============================================================
+   New session button
+   ============================================================ */
+
+.new-session-btn {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--ink-elevated);
+  color: var(--teal);
+  border: 1px solid var(--teal-dim);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.new-session-btn:hover {
+  background: rgba(94, 234, 212, 0.1);
+  border-color: var(--teal);
+  box-shadow: 0 0 12px rgba(94, 234, 212, 0.15);
+}
+
+/* ============================================================
+   Viewing mode (past session editor)
+   ============================================================ */
+
+.viewing-mode {
+  width: 100%;
+}
+
+.viewing-meta {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  color: var(--graphite);
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(107, 114, 128, 0.15);
+}
+
+.edit-dirty {
+  color: var(--amber);
+  font-weight: 500;
+}
+
+.edit-transcript {
+  width: 100%;
+  min-height: 60vh;
+  border: none;
+  outline: none;
+  resize: vertical;
+  background: transparent;
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-size: 17px;
+  line-height: 1.8;
+  color: var(--ink);
+  padding: 0;
+}
+
+.edit-transcript:focus {
+  outline: none;
+}
+
+.edit-transcript::-webkit-scrollbar {
+  width: 6px;
+}
+
+.edit-transcript::-webkit-scrollbar-thumb {
+  background: rgba(107, 114, 128, 0.2);
+  border-radius: 3px;
 }
 
 /* ============================================================
