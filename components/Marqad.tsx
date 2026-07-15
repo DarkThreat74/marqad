@@ -43,6 +43,25 @@ function renderWords(seg: Segment): React.ReactNode[] {
   while (i < seg.words.length) {
     const w = seg.words[i];
 
+    // Pause markers — inserted during parseTranscript to survive merges
+    if (w.type === "pause") {
+      const kind = w.pauseKind || "none";
+      if (kind === "ellipsis") {
+        nodes.push(<span key={`pause-${nodeIdx++}`} className="thinking-pause">…</span>);
+      } else if (kind === "comma") {
+        nodes.push(<span key={`pause-${nodeIdx++}`}>, </span>);
+      } else if (kind === "line") {
+        nodes.push(<br key={`pause-${nodeIdx++}`} />);
+      } else if (kind === "paragraph") {
+        nodes.push(<br key={`pause1-${nodeIdx++}`} />);
+        nodes.push(<br key={`pause2-${nodeIdx++}`} />);
+      } else if (kind === "divider") {
+        nodes.push(<hr key={`pause-${nodeIdx++}`} className="spacing-divider" />);
+      }
+      i++;
+      continue;
+    }
+
     if (w.type === "spacing") {
       nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
       i++;
@@ -670,10 +689,13 @@ export default function Marqad() {
             if (last && last.speaker === seg.speaker) {
               const merged: Segment = {
                 ...last,
+                // Words array now includes pause markers, so pauses survive merges
                 words: [...last.words, ...seg.words],
                 transcript: last.transcript + seg.transcript,
                 audioEnd: seg.audioEnd,
-                spacing: seg.spacing, // Preserve the new segment's spacing
+                // Keep the segment's own spacing (for the first word's spacing).
+                // Internal pauses are handled by pause markers in the words array.
+                spacing: last.spacing,
               };
               const next = [...prev.slice(0, -1), merged];
               segmentsRef.current = next;
@@ -803,12 +825,28 @@ export default function Marqad() {
     if (lastAudioEndRef.current !== null && lastWallTimeRef.current !== null) {
       const audioGap = (audioStart - lastAudioEndRef.current) * 1000;
       const wallGap = wallTime - lastWallTimeRef.current;
+      // Use audio gap when available (accurate), fall back to wall time
       const gap = audioGap >= 0 ? audioGap : wallGap;
       spacing = classifyPause(gap);
     }
 
     lastAudioEndRef.current = audioEnd;
     lastWallTimeRef.current = wallTime;
+
+    // Insert a pause marker at the beginning of the words array if there
+    // was a meaningful pause. This ensures pauses survive segment merges
+    // (previously, spacing was overwritten on merge, losing paragraph breaks).
+    if (spacing !== "none") {
+      words.unshift({
+        content: "",
+        speaker: primarySpeaker,
+        language: "",
+        direction: "ltr",
+        confidence: 0,
+        type: "pause",
+        pauseKind: spacing,
+      });
+    }
 
     return {
       id: `seg-${segIdCounter.current++}`,

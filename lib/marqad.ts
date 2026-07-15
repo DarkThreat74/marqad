@@ -31,7 +31,8 @@ export interface WordToken {
   language: string;
   direction: "ltr" | "rtl";
   confidence: number;
-  type: "word" | "punctuation" | "spacing";
+  type: "word" | "punctuation" | "spacing" | "pause";
+  pauseKind?: "ellipsis" | "comma" | "line" | "paragraph" | "divider";
 }
 
 export interface Segment {
@@ -205,19 +206,18 @@ export function classifyWord(
 }
 
 // ===== Pause-driven spacing (Section 3.4) =====
-// Thresholds tuned for classroom speech — normal speaking pauses
-// (1-2 seconds) should NOT create visual breaks. Only real pauses
-// (teacher stops to think, topic changes, turn changes) should.
-// "thinking" pause (1.2-2.5s) renders as ellipsis (...) for natural flow.
+// Uses actual audio gaps (silence between speech segments) to determine
+// pause type. Audio gaps are accurate — they measure real silence in the
+// audio, not wall time which includes processing delays.
 export function classifyPause(
   gapMs: number
 ): "none" | "ellipsis" | "comma" | "line" | "paragraph" | "divider" {
-  if (gapMs < 1200) return "none";        // normal speech flow
-  if (gapMs < 2500) return "ellipsis";    // thinking pause — show ...
-  if (gapMs < 5000) return "comma";       // sentence-ending pause
-  if (gapMs < 8000) return "line";        // noticeable break
-  if (gapMs < 15000) return "paragraph";  // topic change / turn change
-  return "divider";                        // real break, likely new section
+  if (gapMs < 800) return "none";         // normal speech flow (within-sentence)
+  if (gapMs < 1800) return "ellipsis";    // thinking pause — "umm", gathering thoughts
+  if (gapMs < 3500) return "comma";       // sentence-ending pause
+  if (gapMs < 6000) return "line";        // noticeable break — new sentence
+  if (gapMs < 12000) return "paragraph";  // topic change / turn change
+  return "divider";                        // real break — new section
 }
 
 // ===== Filler word detection =====
@@ -274,12 +274,62 @@ export function buildStartRecognition(): string {
       enable_partials: true,
       max_delay: CONFIG.MAX_DELAY,
       diarization: "speaker",
-      // Disable auto-punctuation — Speechmatics inserts false periods
-      // where there are no pauses. We handle spacing via pause detection.
-      // Use permitted_marks: [] to suppress all punctuation marks.
+      // Disable auto-punctuation — we handle spacing via pause detection
       punctuation_overrides: {
         permitted_marks: [],
       },
+      // Custom vocabulary — common Arabic/Islamic names and terms that
+      // Speechmatics mishears (e.g. "a'mari" → "ahmadi")
+      additional_vocab: [
+        // Common Arabic names
+        { content: "A'mari", sounds_like: ["ahmari", "amari", "amary", "ahmadi", "amadi"] },
+        { content: "Amari", sounds_like: ["amari", "amary", "ahmari"] },
+        { content: "Bukhari", sounds_like: ["bukhari", "bukhary", "bohari"] },
+        { content: "Muslim", sounds_like: ["moslem", "muslem"] },
+        { content: "Tirmidhi", sounds_like: ["tirmidhi", "termidhi", "tirmizi"] },
+        { content: "Abu Dawud", sounds_like: ["abu dawood", "abu daud"] },
+        { content: "An-Nawawi", sounds_like: ["nawawi", "nawawy", "an nawawi"] },
+        { content: "Ibn Majah", sounds_like: ["ibn majah", "ibn maja"] },
+        { content: "Ibn Kathir", sounds_like: ["ibn kathir", "ibn kaseer"] },
+        { content: "Ibn Hajar", sounds_like: ["ibn hajar", "ibn hajr"] },
+        { content: "As-Suyuti", sounds_like: ["suyuti", "suyuty", "as suyuti"] },
+        { content: "Al-Ghazali", sounds_like: ["ghazali", "ghazaly", "al ghazali"] },
+        { content: "An-Nasa'i", sounds_like: ["nasai", "nasay", "an nasai"] },
+        { content: "Ibn Taymiyyah", sounds_like: ["ibn taymiyyah", "ibn taymiyah"] },
+        { content: "Shafi'i", sounds_like: ["shafii", "shafei", "shafiy"] },
+        { content: "Maliki", sounds_like: ["maliki", "maleki", "maliky"] },
+        { content: "Hanbali", sounds_like: ["hanbali", "hanbaly"] },
+        { content: "Hanafi", sounds_like: ["hanafi", "hanafy"] },
+        // Common Islamic terms
+        { content: "Insha'Allah", sounds_like: ["inshallah", "insha allah"] },
+        { content: "Masha'Allah", sounds_like: ["mashallah", "masha allah"] },
+        { content: "Subhan'Allah", sounds_like: ["subhanallah", "subhan allah"] },
+        { content: "Astaghfirullah", sounds_like: ["astaghfirullah", "astaghferullah"] },
+        { content: "Jazak'Allah", sounds_like: ["jazakallah", "jazak allah"] },
+        { content: "Sallallahu alayhi wa sallam", sounds_like: ["sallallahu alayhi wa sallam"] },
+        { content: "Rasulullah", sounds_like: ["rasulullah", "rasoolullah"] },
+        { content: "Subhanahu wa Ta'ala", sounds_like: ["subhanahu wa taala"] },
+        // Quranic terms
+        { content: "Ayah", sounds_like: ["aya", "ayah", "ayat"] },
+        { content: "Surah", sounds_like: ["sura", "surah", "surat"] },
+        { content: "Hadith", sounds_like: ["hadith", "hadeeth", "hadeth"] },
+        { content: "Sunnah", sounds_like: ["sunnah", "sunna", "sunnat"] },
+        { content: "Tafsir", sounds_like: ["tafsir", "tafseer"] },
+        { content: "Fiqh", sounds_like: ["fiqh", "feqh"] },
+        { content: "Usul", sounds_like: ["usul", "usool"] },
+        { content: "Ijtihad", sounds_like: ["ijtihad", "ijtehad"] },
+        { content: "Qiyas", sounds_like: ["qiyas", "qiyass"] },
+        { content: "Ijma", sounds_like: ["ijma", "ijmaa"] },
+        // Common Arabic phrases in classroom context
+        { content: "Bismillah", sounds_like: ["bismillah", "bismi allah"] },
+        { content: "Alhamdulillah", sounds_like: ["alhamdulillah", "alhamdo lillah"] },
+        { content: "Taqwa", sounds_like: ["taqwa", "taqoua"] },
+        { content: "Tawheed", sounds_like: ["tawheed", "tawhid"] },
+        { content: "Shirk", sounds_like: ["shirk", "sherik"] },
+        { content: "Bid'ah", sounds_like: ["bidah", "bida"] },
+        { content: "Halal", sounds_like: ["halal", "halal"] },
+        { content: "Haram", sounds_like: ["haram", "haraam"] },
+      ],
     },
     audio_format: {
       type: "raw",
