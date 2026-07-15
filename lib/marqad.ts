@@ -20,7 +20,7 @@ export const CONFIG = {
   WS_HOST: "wss://us.rt.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
-  MAX_DELAY: 0.7, // minimum allowed by Speechmatics API (range: 0.7-4.0)
+  MAX_DELAY: 3.0, // accuracy over latency — transcripts reviewed after class, not live
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
 
@@ -273,7 +273,8 @@ export function buildStartRecognition(): string {
       model: "enhanced",
       enable_partials: true,
       max_delay: CONFIG.MAX_DELAY,
-      max_delay_mode: "fixed", // Don't wait for smart formatting — lower latency
+      max_delay_mode: "flexible", // hold Finals open longer for entities (dates, names, numbers)
+      end_of_utterance_mode: "adaptive", // adapt silence threshold to natural speech rate + disfluencies
       diarization: "speaker",
       speaker_diarization_config: {
         prefer_current_speaker: true, // Reduce incorrect speaker switches
@@ -297,6 +298,23 @@ export function buildStartRecognition(): string {
       },
       // Custom vocabulary — common Arabic/Islamic names and terms
       additional_vocab: [
+        // Class/book names from the fixed daily schedule — said constantly,
+        // exactly the kind of proper noun a general model won't have in training.
+        { content: "Mishkat", sounds_like: ["mish-kaat", "mishkat", "mishkaat"] },
+        { content: "Sharh al Wiqayah", sounds_like: ["sharh al wiqaya", "sharhul wiqaya", "wiqayah"] },
+        { content: "Hidayah", sounds_like: ["hidaya", "hidayah", "hidaaya"] },
+        { content: "Nur al Anwar", sounds_like: ["noor ul anwar", "nurul anwar"] },
+        { content: "Qiraat", sounds_like: ["qira'at", "qiraat", "keeraat"] },
+        { content: "Iqtisad", sounds_like: ["iqtisaad", "iqtisad"] },
+        { content: "Jalalayn", sounds_like: ["jalalayn", "jalalain", "the jalalayn"] },
+        { content: "Hadith", sounds_like: ["hadeeth", "hadith"] },
+        // Common Islamic scholarly terms likely to recur across multiple classes
+        { content: "Nahw", sounds_like: ["nahw", "nahu"] },
+        { content: "Balagha", sounds_like: ["balagha", "balaghah"] },
+        { content: "Tafsir", sounds_like: ["tafseer", "tafsir"] },
+        { content: "Mantiq", sounds_like: ["mantiq", "mantik"] },
+        { content: "Usul al-Fiqh", sounds_like: ["usul al fiqh", "usulul fiqh"] },
+        { content: "Hanafi", sounds_like: ["hanafi", "hanafee"] },
         // Common Arabic names
         { content: "A'mari", sounds_like: ["ahmari", "amari", "amary", "ahmadi", "amadi"] },
         { content: "Amari", sounds_like: ["amari", "amary", "ahmari"] },
