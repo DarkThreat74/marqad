@@ -361,6 +361,8 @@ export default function Marqad() {
   const [editText, setEditText] = useState("");
   const [editDirty, setEditDirty] = useState(false);
   const [editSaved, setEditSaved] = useState(false);
+  const [liveEditMode, setLiveEditMode] = useState(false); // edit live transcript
+  const [liveEditText, setLiveEditText] = useState("");
 
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
@@ -1050,6 +1052,37 @@ export default function Marqad() {
   }, []);
 
   // ============================================================
+  // Live edit mode — edit the current transcript on the page
+  // ============================================================
+
+  const toggleLiveEdit = useCallback(() => {
+    if (!liveEditMode) {
+      // Entering edit mode — snapshot current transcript into the textarea
+      setLiveEditText(buildExportText(segmentsRef.current));
+      setLiveEditMode(true);
+    } else {
+      // Exiting edit mode — discard changes, go back to rendered view
+      setLiveEditMode(false);
+    }
+  }, [liveEditMode]);
+
+  const saveLiveEdit = useCallback(() => {
+    if (!liveEditMode) return;
+    const record: SessionRecord = {
+      id: `session-${Date.now()}`,
+      date: new Date().toISOString(),
+      durationSec: elapsedSec,
+      segmentCount: segmentsRef.current.length,
+      preview: liveEditText.slice(0, 120).replace(/\n/g, " "),
+      exportText: liveEditText,
+    };
+    const updated = saveSession(record);
+    setHistory(updated);
+    setEditSaved(true);
+    setTimeout(() => setEditSaved(false), 2000);
+  }, [liveEditMode, liveEditText, elapsedSec]);
+
+  // ============================================================
   // History handlers
   // ============================================================
 
@@ -1255,34 +1288,64 @@ export default function Marqad() {
             </>
           ) : (
             <>
-              <select
-                className="format-select"
-                value={format}
-                onChange={(e) => setFormat(e.target.value as ViewFormat)}
-                aria-label="View format"
-              >
-                <option value="prose">Prose</option>
-                <option value="dialogue">Dialogue</option>
-                <option value="notes">Notes</option>
-              </select>
+              {liveEditMode ? (
+                <>
+                  <button
+                    className={`copy-btn ${editSaved ? "copied" : ""}`}
+                    onClick={saveLiveEdit}
+                  >
+                    {editSaved ? "✓ Saved" : "Save"}
+                  </button>
+                  <button
+                    className="new-session-btn"
+                    onClick={toggleLiveEdit}
+                    title="Exit edit mode"
+                  >
+                    Done
+                  </button>
+                </>
+              ) : (
+                <>
+                  <select
+                    className="format-select"
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value as ViewFormat)}
+                    aria-label="View format"
+                  >
+                    <option value="prose">Prose</option>
+                    <option value="dialogue">Dialogue</option>
+                    <option value="notes">Notes</option>
+                  </select>
 
-              <button
-                className="history-btn"
-                onClick={() => setHistoryOpen(true)}
-                aria-label="History"
-                title="Session history"
-              >
-                <span className="history-icon">⏷</span>
-                <span className="history-count">{history.length}</span>
-              </button>
+                  <button
+                    className="edit-toggle-btn"
+                    onClick={toggleLiveEdit}
+                    disabled={segments.length === 0}
+                    aria-label="Edit transcript"
+                    title="Edit transcript"
+                  >
+                    Edit
+                  </button>
 
-              <button
-                className={`copy-btn ${copied ? "copied" : ""}`}
-                onClick={copyTranscript}
-                disabled={segments.length === 0}
-              >
-                {copied ? "✓ Copied" : "Copy"}
-              </button>
+                  <button
+                    className="history-btn"
+                    onClick={() => setHistoryOpen(true)}
+                    aria-label="History"
+                    title="Session history"
+                  >
+                    <span className="history-icon">⏷</span>
+                    <span className="history-count">{history.length}</span>
+                  </button>
+
+                  <button
+                    className={`copy-btn ${copied ? "copied" : ""}`}
+                    onClick={copyTranscript}
+                    disabled={segments.length === 0}
+                  >
+                    {copied ? "✓ Copied" : "Copy"}
+                  </button>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1320,6 +1383,23 @@ export default function Marqad() {
                   setEditDirty(true);
                 }}
                 spellCheck={false}
+              />
+            </div>
+          ) : liveEditMode ? (
+            /* ===== Live edit mode: edit current transcript on the page ===== */
+            <div className="viewing-mode">
+              <div className="viewing-meta">
+                Editing live transcript
+                {liveEditText !== buildExportText(segmentsRef.current) && (
+                  <span className="edit-dirty"> · unsaved</span>
+                )}
+              </div>
+              <textarea
+                className="edit-transcript"
+                value={liveEditText}
+                onChange={(e) => setLiveEditText(e.target.value)}
+                spellCheck={false}
+                autoFocus
               />
             </div>
           ) : (
