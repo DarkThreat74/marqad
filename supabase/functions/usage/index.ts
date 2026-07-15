@@ -66,47 +66,20 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      // Try to get existing record
-      const { data: existing, error: fetchError } = await supabase
-        .from("marqad_usage")
-        .select("id, seconds")
-        .eq("user_id", USER_ID)
-        .eq("month_key", monthKey)
-        .single();
+      // Atomic increment via SQL function — avoids race conditions
+      const { data: newSeconds, error: rpcError } = await supabase
+        .rpc("add_usage_seconds", {
+          p_user_id: USER_ID,
+          p_month_key: monthKey,
+          p_seconds: addSeconds,
+        });
 
-      if (fetchError && fetchError.code !== "PGRST116") {
-        throw fetchError;
-      }
+      if (rpcError) throw rpcError;
 
-      if (existing) {
-        // Update existing record
-        const newSeconds = existing.seconds + addSeconds;
-        const { error: updateError } = await supabase
-          .from("marqad_usage")
-          .update({ seconds: newSeconds, updated_at: new Date().toISOString() })
-          .eq("id", existing.id);
-
-        if (updateError) throw updateError;
-
-        return new Response(
-          JSON.stringify({ seconds: newSeconds, monthKey }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      } else {
-        // Insert new record
-        const { error: insertError } = await supabase
-          .from("marqad_usage")
-          .insert({
-            user_id: USER_ID,
-            month_key: monthKey,
-            seconds: addSeconds,
-          });
-
-        if (insertError) throw insertError;
-
-        return new Response(
-          JSON.stringify({ seconds: addSeconds, monthKey }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      return new Response(
+        JSON.stringify({ seconds: newSeconds || addSeconds, monthKey }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
         );
       }
     }

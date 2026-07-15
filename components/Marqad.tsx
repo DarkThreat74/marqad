@@ -467,7 +467,16 @@ export default function Marqad() {
     });
   }, []);
 
-  // Online/offline detection
+  // Online/offline detection — uses refs to avoid re-running on state changes
+  const statusKindRef = useRef(statusKind);
+  const statusTextRef = useRef(statusText);
+  const recStateRef = useRef(recState);
+  useEffect(() => {
+    statusKindRef.current = statusKind;
+    statusTextRef.current = statusText;
+    recStateRef.current = recState;
+  }, [statusKind, statusText, recState]);
+
   useEffect(() => {
     const updateOnline = () => {
       const online = navigator.onLine;
@@ -475,11 +484,11 @@ export default function Marqad() {
       if (!online) {
         setStatusText("You're offline — check your internet connection");
         setStatusKind("error");
-      } else if (statusKind === "error" && statusText.includes("offline")) {
+      } else if (statusKindRef.current === "error" && statusTextRef.current.includes("offline")) {
         setStatusText("Back online");
         setStatusKind("idle");
         setTimeout(() => {
-          if (recState === "idle") {
+          if (recStateRef.current === "idle") {
             setStatusText("Ready");
           }
         }, 2000);
@@ -492,7 +501,7 @@ export default function Marqad() {
       window.removeEventListener("online", updateOnline);
       window.removeEventListener("offline", updateOnline);
     };
-  }, [statusKind, statusText, recState]);
+  }, []);
 
   // Save usage on page close/unload (so partial session is counted)
   useEffect(() => {
@@ -500,12 +509,16 @@ export default function Marqad() {
       const sec = sessionStreamingSecRef.current;
       const remainder = sec % 10;
       if (remainder > 0) {
-        // Use sendBeacon for fire-and-forget on page unload
+        // Use sendBeacon with a Blob to set correct Content-Type
         try {
           const url = process.env.NEXT_PUBLIC_SUPABASE_URL
             ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/usage`
             : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/usage";
-          navigator.sendBeacon(url, JSON.stringify({ seconds: remainder }));
+          const blob = new Blob(
+            [JSON.stringify({ seconds: remainder })],
+            { type: "application/json" }
+          );
+          navigator.sendBeacon(url, blob);
         } catch {
           addToMonthlySeconds(remainder);
         }
@@ -518,14 +531,16 @@ export default function Marqad() {
   // Register service worker — force update on every load
   useEffect(() => {
     if ("serviceWorker" in navigator) {
+      const handleControllerChange = () => {
+        window.location.reload();
+      };
       navigator.serviceWorker.register("/sw.js").then((reg) => {
-        // Check for updates immediately
         reg.update();
       }).catch(() => {});
-      // Listen for a new SW taking control and reload to get fresh assets
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        window.location.reload();
-      });
+      navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
+      return () => {
+        navigator.serviceWorker.removeEventListener("controllerchange", handleControllerChange);
+      };
     }
   }, []);
 
@@ -652,6 +667,7 @@ export default function Marqad() {
                 words: [...last.words, ...seg.words],
                 transcript: last.transcript + seg.transcript,
                 audioEnd: seg.audioEnd,
+                spacing: seg.spacing, // Preserve the new segment's spacing
               };
               const next = [...prev.slice(0, -1), merged];
               segmentsRef.current = next;
@@ -662,6 +678,8 @@ export default function Marqad() {
             return next;
           });
         }
+        // Clear partial after a short delay to avoid flash during language switches
+        setTimeout(() => setPartial(""), 150);
         break;
       }
 
@@ -930,31 +948,15 @@ export default function Marqad() {
     lastAudioEndRef.current = null;
     lastWallTimeRef.current = null;
 
-    // If viewing a past session, load its segments so we can continue recording
-    // into it. Otherwise start fresh.
+    // If viewing a past session, exit viewing mode and start fresh.
+    // The old session is preserved in history.
     if (viewingRecord) {
-      // Parse the viewing record's export text back into segments
-      // (simplified — just keep the text as a single segment for context)
-      const existingSeg: Segment = {
-        id: `prev-${Date.now()}`,
-        words: [],
-        transcript: viewingRecord.exportText,
-        speaker: "S1",
-        audioStart: 0,
-        audioEnd: 0,
-        wallTime: Date.now(),
-        spacing: "none",
-      };
-      setSegments([existingSeg]);
-      segmentsRef.current = [existingSeg];
-      // Exit viewing mode — we're now recording
       setViewingRecord(null);
       setEditText("");
       setEditDirty(false);
-    } else {
-      setSegments([]);
-      segmentsRef.current = [];
     }
+    setSegments([]);
+    segmentsRef.current = [];
     setPartial("");
     setElapsedSec(0);
     elapsedRef.current = 0;
@@ -1032,7 +1034,10 @@ export default function Marqad() {
           sessionStreamingSecRef.current += 1;
           // Save to database every 10 seconds
           if (sessionStreamingSecRef.current % 10 === 0) {
-            addToMonthlySecondsDB(10);
+            addToMonthlySecondsDB(10).catch(() => {
+              // Fallback to localStorage if database is unreachable
+              addToMonthlySeconds(10);
+            });
             setUsageStats(getUsageStats(sessionStreamingSecRef.current));
           }
         }
@@ -1117,6 +1122,8 @@ export default function Marqad() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    // Cancel animation frame
+    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
 
     // Close WebSocket
     if (wsRef.current) {
@@ -1242,15 +1249,16 @@ export default function Marqad() {
   // ============================================================
 
   const toggleLiveEdit = useCallback(() => {
-    if (!liveEditMode) {
-      // Entering edit mode — snapshot current transcript into the textarea
-      setLiveEditText(buildExportText(segmentsRef.current));
-      setLiveEditMode(true);
-    } else {
+    setLiveEditMode((prev) => {
+      if (!prev) {
+        // Entering edit mode — snapshot current transcript into the textarea
+        setLiveEditText(buildExportText(segmentsRef.current));
+        return true;
+      }
       // Exiting edit mode — discard changes, go back to rendered view
-      setLiveEditMode(false);
-    }
-  }, [liveEditMode]);
+      return false;
+    });
+  }, []);
 
   const saveLiveEdit = useCallback(() => {
     if (!liveEditMode) return;

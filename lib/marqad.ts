@@ -20,7 +20,7 @@ export const CONFIG = {
   WS_HOST: "wss://us.rt.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
-  MAX_DELAY: 0.3, // reduced from 0.7 for faster response on language switches
+  MAX_DELAY: 0.7, // minimum allowed by Speechmatics API (range: 0.7-4.0)
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
 
@@ -111,7 +111,7 @@ export function isArabicWord(word: WordToken): boolean {
 // ===== Date detection (Section 3.5 — purple highlight) =====
 const MONTH_NAMES = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i;
 const YEAR_REGEX = /\b(19|20|21)\d{2}\b/; // Gregorian years
-const HIJRI_YEAR = /\b14[0-9]{2}\b|\b15[0-9]{2}\b/; // Hijri years 1400-1599
+const HIJRI_YEAR = /\b(14[0-9]{2}|15[0-9]{2})\b/; // Hijri years 1400-1599
 const ORDINAL = /\b\d+(st|nd|rd|th)\b/i;
 const DATE_KEYWORDS = /\b(century|hijri|millennium|decade|era|epoch|year|date)\b/i;
 const DATE_ERAS = /\b(ce|bce|ah|bh|ad|bc)\b/i;
@@ -387,7 +387,9 @@ export function loadMonthlySeconds(): number {
   if (typeof window === "undefined") return 0;
   if (cachedSeconds !== null) return cachedSeconds;
   const val = localStorage.getItem(getMonthlyKey());
-  return val ? parseFloat(val) : 0;
+  if (!val) return 0;
+  const parsed = parseFloat(val);
+  return isNaN(parsed) ? 0 : parsed;
 }
 
 // Add seconds to database (async, fire-and-forget)
@@ -442,7 +444,9 @@ export interface UsageStats {
 
 export function getUsageStats(currentSessionSec: number): UsageStats {
   const monthlySeconds = loadMonthlySeconds();
-  const monthlyMinutes = monthlySeconds / 60;
+  // Include current session seconds in the monthly total for accurate display
+  const totalSeconds = monthlySeconds + currentSessionSec;
+  const monthlyMinutes = totalSeconds / 60;
   const sessionMinutes = currentSessionSec / 60;
   const remainingMinutes = Math.max(0, FREE_TIER_MINUTES - monthlyMinutes);
   const percentUsed = Math.min(100, (monthlyMinutes / FREE_TIER_MINUTES) * 100);
