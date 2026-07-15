@@ -251,8 +251,9 @@ export function buildStartRecognition(): string {
       diarization: "speaker",
       // Disable auto-punctuation — Speechmatics inserts false periods
       // where there are no pauses. We handle spacing via pause detection.
+      // Use permitted_marks: [] to suppress all punctuation marks.
       punctuation_overrides: {
-        enabled: false,
+        permitted_marks: [],
       },
     },
     audio_format: {

@@ -687,16 +687,20 @@ export default function Marqad() {
         break;
 
       case "Error":
-        // Gap 3 fix: handle quota exhaustion gracefully
+        // Handle quota exhaustion gracefully
         if (msg.type === "quota_exceeded" || msg.code === 4005) {
           setStatusText("Free tier minutes exhausted — resets next month");
           setStatusKind("error");
-          shouldReconnectRef.current = false; // don't retry — will keep failing
+          shouldReconnectRef.current = false;
           setRecState("idle");
           teardown();
         } else {
-          setStatusText(`Error: ${msg.reason || msg.type || "unknown"}`);
+          // Show the actual error from Speechmatics for debugging
+          const errDetail = msg.reason || msg.message || msg.type || "unknown";
+          setStatusText(`Speechmatics error: ${errDetail}`);
           setStatusKind("error");
+          // Log full error to console for debugging
+          console.error("Speechmatics error:", JSON.stringify(msg));
         }
         break;
     }
