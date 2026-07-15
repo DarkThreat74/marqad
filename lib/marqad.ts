@@ -273,13 +273,29 @@ export function buildStartRecognition(): string {
       model: "enhanced",
       enable_partials: true,
       max_delay: CONFIG.MAX_DELAY,
+      max_delay_mode: "fixed", // Don't wait for smart formatting — lower latency
       diarization: "speaker",
+      speaker_diarization_config: {
+        prefer_current_speaker: true, // Reduce incorrect speaker switches
+      },
       // Disable auto-punctuation — we handle spacing via pause detection
       punctuation_overrides: {
         permitted_marks: [],
       },
-      // Custom vocabulary — common Arabic/Islamic names and terms that
-      // Speechmatics mishears (e.g. "a'mari" → "ahmadi")
+      // Word replacement — fix common mishearings in post-processing
+      transcript_filtering_config: {
+        replacements: [
+          { from: "ahmadi", to: "A'mari" },
+          { from: "Ahmadi", to: "A'mari" },
+          { from: "inshallah", to: "Insha'Allah" },
+          { from: "Inshallah", to: "Insha'Allah" },
+          { from: "mashallah", to: "Masha'Allah" },
+          { from: "Mashallah", to: "Masha'Allah" },
+          { from: "subhanallah", to: "Subhan'Allah" },
+          { from: "Subhanallah", to: "Subhan'Allah" },
+        ],
+      },
+      // Custom vocabulary — common Arabic/Islamic names and terms
       additional_vocab: [
         // Common Arabic names
         { content: "A'mari", sounds_like: ["ahmari", "amari", "amary", "ahmadi", "amadi"] },
