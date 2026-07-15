@@ -853,10 +853,12 @@ export default function Marqad() {
   // ============================================================
 
   const teardown = useCallback(() => {
+    // Clear all timers
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
 
+    // Close WebSocket
     if (wsRef.current) {
       try {
         if (wsRef.current.readyState === WebSocket.OPEN) {
@@ -864,25 +866,50 @@ export default function Marqad() {
         }
       } catch {}
       wsRef.current.onclose = null;
-      wsRef.current.close();
+      wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onopen = null;
+      try { wsRef.current.close(); } catch {}
       wsRef.current = null;
     }
 
-    if (sourceNodeRef.current) { try { sourceNodeRef.current.disconnect(); } catch {} sourceNodeRef.current = null; }
-    if (workletNodeRef.current) { try { workletNodeRef.current.disconnect(); } catch {} workletNodeRef.current = null; }
-    if (zeroGainRef.current) { try { zeroGainRef.current.disconnect(); } catch {} zeroGainRef.current = null; }
+    // Disconnect audio nodes — order matters: source first, then downstream
+    if (sourceNodeRef.current) {
+      try { sourceNodeRef.current.disconnect(); } catch {}
+      sourceNodeRef.current = null;
+    }
+    if (workletNodeRef.current) {
+      try { workletNodeRef.current.port.close(); } catch {}
+      try { workletNodeRef.current.disconnect(); } catch {}
+      workletNodeRef.current = null;
+    }
+    if (zeroGainRef.current) {
+      try { zeroGainRef.current.disconnect(); } catch {}
+      zeroGainRef.current = null;
+    }
 
+    // Stop ALL media stream tracks — this turns off the browser mic indicator
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current.getTracks().forEach((track) => {
+        track.stop();
+        track.enabled = false;
+      });
       mediaStreamRef.current = null;
     }
 
+    // Close AudioContext — must be last, after nodes are disconnected
     if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
+      const ctx = audioCtxRef.current;
       audioCtxRef.current = null;
+      try {
+        if (ctx.state !== "closed") {
+          ctx.close().catch(() => {});
+        }
+      } catch {}
     }
 
     recognitionStartedRef.current = false;
+    isPausedRef.current = false;
   }, []);
 
   const stopRecording = useCallback(() => {
@@ -1033,7 +1060,7 @@ export default function Marqad() {
             </button>
           ) : (
             <button
-              className="mic-btn recording"
+              className={`mic-btn recording ${recState === "connecting" ? "connecting" : ""} ${recState === "paused" ? "paused" : ""}`}
               onClick={stopRecording}
               aria-label="Stop recording"
               title="Stop recording"
