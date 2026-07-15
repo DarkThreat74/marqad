@@ -456,35 +456,25 @@ html, body {
 .usage-bar-total { color: var(--graphite); }
 
 /* --- History Button --- */
-.history-btn {
+.history-text-btn {
   font-family: var(--font-chrome);
   font-size: 11px;
   background: var(--ink-raised);
   color: var(--paper);
   border: 1px solid var(--ink-border);
   border-radius: var(--radius-sm);
-  padding: 7px 10px;
+  padding: 7px 12px;
   cursor: pointer;
   min-height: 36px;
   flex-shrink: 0;
   transition: all var(--transition);
-  display: flex;
-  align-items: center;
-  gap: 5px;
+  white-space: nowrap;
 }
 
-.history-btn:hover {
+.history-text-btn:hover {
   border-color: var(--ink-border-light);
   background: var(--ink-elevated);
-}
-
-.history-icon { font-size: 10px; color: var(--graphite); }
-.history-count {
-  font-size: 10px;
   color: var(--teal);
-  font-weight: 600;
-  min-width: 14px;
-  text-align: center;
 }
 
 /* --- Copy Button --- */
@@ -1038,7 +1028,7 @@ html, body {
     padding: 6px 20px 6px 8px;
   }
 
-  .history-btn {
+  .history-text-btn {
     padding: 6px 8px;
   }
 

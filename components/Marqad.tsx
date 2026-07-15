@@ -1389,14 +1389,24 @@ export default function Marqad() {
                   </button>
 
                   <button
-                    className="history-btn"
+                    className="history-text-btn"
                     onClick={() => setHistoryOpen(true)}
                     aria-label="History"
                     title="Session history"
                   >
-                    <span className="history-icon">⏷</span>
-                    <span className="history-count">{history.length}</span>
+                    History
                   </button>
+
+                  {segments.length > 0 && recState === "idle" && (
+                    <button
+                      className="new-session-btn"
+                      onClick={handleNewSession}
+                      aria-label="Start new session"
+                      title="Clear transcript and start fresh"
+                    >
+                      + New
+                    </button>
+                  )}
 
                   <button
                     className={`copy-btn ${copied ? "copied" : ""}`}
