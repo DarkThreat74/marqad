@@ -401,10 +401,17 @@ export default function Marqad() {
     setUsageStats(getUsageStats(0));
   }, []);
 
-  // Register service worker
+  // Register service worker — force update on every load
   useEffect(() => {
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").catch(() => {});
+      navigator.serviceWorker.register("/sw.js").then((reg) => {
+        // Check for updates immediately
+        reg.update();
+      }).catch(() => {});
+      // Listen for a new SW taking control and reload to get fresh assets
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        window.location.reload();
+      });
     }
   }, []);
 
