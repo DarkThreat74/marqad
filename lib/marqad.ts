@@ -370,6 +370,11 @@ export interface UsageStats {
   // Projected usage at current rate
   projectedMonthlyMinutes: number;
   isOverLimit: boolean;
+  // Warning tiers for graceful UX (gap 3 fix)
+  isApproachingLimit: boolean;  // >= 80% used
+  isCriticalLimit: boolean;     // >= 95% used
+  // Estimated minutes the current session can still run before hitting limit
+  sessionRemainingMinutes: number;
 }
 
 export function getUsageStats(currentSessionSec: number): UsageStats {
@@ -388,6 +393,9 @@ export function getUsageStats(currentSessionSec: number): UsageStats {
   const projectedMonthlyMinutes =
     dayOfMonth > 0 ? (monthlyMinutes / dayOfMonth) * daysInMonth : monthlyMinutes;
 
+  // How much of the remaining monthly budget is left for THIS session
+  const sessionRemainingMinutes = Math.max(0, remainingMinutes - sessionMinutes);
+
   return {
     monthlySeconds,
     monthlyMinutes,
@@ -399,5 +407,49 @@ export function getUsageStats(currentSessionSec: number): UsageStats {
     dayOfMonth,
     projectedMonthlyMinutes,
     isOverLimit: monthlyMinutes >= FREE_TIER_MINUTES,
+    isApproachingLimit: percentUsed >= 80 && percentUsed < 95,
+    isCriticalLimit: percentUsed >= 95,
+    sessionRemainingMinutes,
   };
+}
+
+// ===== History backup/export (gap 6 fix) =====
+
+export function exportHistoryJSON(): string {
+  const history = loadHistory();
+  return JSON.stringify({
+    exportedAt: new Date().toISOString(),
+    version: 1,
+    sessions: history,
+  }, null, 2);
+}
+
+export function importHistoryJSON(json: string): SessionRecord[] {
+  try {
+    const parsed = JSON.parse(json);
+    if (!parsed.sessions || !Array.isArray(parsed.sessions)) {
+      throw new Error("Invalid backup format");
+    }
+    const existing = loadHistory();
+    const existingIds = new Set(existing.map((s) => s.id));
+    // Merge: add imported sessions that don't already exist
+    const merged = [...existing];
+    for (const session of parsed.sessions) {
+      if (!existingIds.has(session.id)) {
+        merged.push(session);
+      }
+    }
+    // Sort by date descending
+    merged.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    // Trim to max
+    if (merged.length > MAX_HISTORY_ENTRIES) {
+      merged.length = MAX_HISTORY_ENTRIES;
+    }
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(merged));
+    } catch {}
+    return merged;
+  } catch {
+    throw new Error("Invalid backup file");
+  }
 }

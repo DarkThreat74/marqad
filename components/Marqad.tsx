@@ -22,6 +22,8 @@ import {
   getUsageStats,
   addToMonthlySeconds,
   loadMonthlySeconds,
+  exportHistoryJSON,
+  importHistoryJSON,
 } from "@/lib/marqad";
 
 // ============================================================
@@ -132,17 +134,53 @@ function HistoryPanel({
   history,
   onDelete,
   onView,
+  onImport,
 }: {
   open: boolean;
   onClose: () => void;
   history: SessionRecord[];
   onDelete: (id: string) => void;
   onView: (record: SessionRecord) => void;
+  onImport: (json: string) => void;
 }) {
   const [viewing, setViewing] = useState<SessionRecord | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   if (!open) return null;
+
+  const handleExport = () => {
+    const json = exportHistoryJSON();
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `marqad-history-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImportClick = () => {
+    setImportError(null);
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        onImport(reader.result as string);
+      } catch {
+        setImportError("Invalid backup file");
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so the same file can be re-selected
+    e.target.value = "";
+  };
 
   return (
     <>
@@ -154,6 +192,25 @@ function HistoryPanel({
             ✕
           </button>
         </div>
+
+        {!viewing && (
+          <div className="history-actions">
+            <button className="history-action-btn" onClick={handleExport} disabled={history.length === 0}>
+              ↓ Backup
+            </button>
+            <button className="history-action-btn" onClick={handleImportClick}>
+              ↑ Restore
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json,.json"
+              onChange={handleFileSelected}
+              style={{ display: "none" }}
+            />
+          </div>
+        )}
+        {importError && <div className="history-import-error">{importError}</div>}
 
         {viewing ? (
           <div className="history-viewer">
@@ -460,8 +517,17 @@ export default function Marqad() {
         break;
 
       case "Error":
-        setStatusText(`Error: ${msg.reason || msg.type || "unknown"}`);
-        setStatusKind("error");
+        // Gap 3 fix: handle quota exhaustion gracefully
+        if (msg.type === "quota_exceeded" || msg.code === 4005) {
+          setStatusText("Free tier minutes exhausted — resets next month");
+          setStatusKind("error");
+          shouldReconnectRef.current = false; // don't retry — will keep failing
+          setRecState("idle");
+          teardown();
+        } else {
+          setStatusText(`Error: ${msg.reason || msg.type || "unknown"}`);
+          setStatusKind("error");
+        }
         break;
     }
   }, []);
@@ -619,6 +685,15 @@ export default function Marqad() {
     setArmed(false);
 
     if (recState !== "idle") return;
+
+    // Gap 3 fix: block start if free tier is exhausted
+    const stats = getUsageStats(0);
+    if (stats.isOverLimit) {
+      setStatusText("Free tier exhausted — resets next month");
+      setStatusKind("error");
+      return;
+    }
+
     setRecState("connecting");
     setStatusText("Requesting microphone...");
     setStatusKind("connecting");
@@ -874,6 +949,15 @@ export default function Marqad() {
     setHistory(updated);
   }, []);
 
+  const handleImportHistory = useCallback((json: string) => {
+    try {
+      const updated = importHistoryJSON(json);
+      setHistory(updated);
+    } catch {
+      // Error is handled in HistoryPanel via onImport throw
+    }
+  }, []);
+
   // ============================================================
   // Scroll tracking
   // ============================================================
@@ -996,6 +1080,18 @@ export default function Marqad() {
         </div>
       </div>
 
+      {/* ===== Free tier warning banner (gap 3 fix) ===== */}
+      {usageStats?.isOverLimit && (
+        <div className="tier-banner tier-banner-error">
+          Free tier exhausted ({usageStats.monthlyMinutes.toFixed(0)}/{usageStats.freeTierMinutes} min). Transcription will not work until next month resets.
+        </div>
+      )}
+      {usageStats?.isCriticalLimit && !usageStats.isOverLimit && (
+        <div className="tier-banner tier-banner-warning">
+          Approaching free tier limit — {usageStats.remainingMinutes.toFixed(0)} min left this month.
+        </div>
+      )}
+
       {/* ===== Paper Page ===== */}
       <div className="page-scroll" ref={pageScrollRef} onScroll={handleScroll}>
         <div className="page">
@@ -1031,6 +1127,7 @@ export default function Marqad() {
         history={history}
         onDelete={handleDeleteHistory}
         onView={() => {}}
+        onImport={handleImportHistory}
       />
     </div>
   );

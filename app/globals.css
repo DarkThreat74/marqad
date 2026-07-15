@@ -934,3 +934,70 @@ html, body {
     font-size: 10px;
   }
 }
+
+/* ============================================================
+   Free tier warning banners (gap 3 fix)
+   ============================================================ */
+
+.tier-banner {
+  font-family: var(--font-chrome);
+  font-size: 12px;
+  padding: 8px 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tier-banner-warning {
+  background: rgba(245, 166, 35, 0.1);
+  color: var(--amber);
+  border-bottom: 1px solid rgba(245, 166, 35, 0.2);
+}
+
+.tier-banner-error {
+  background: rgba(245, 166, 35, 0.15);
+  color: var(--amber);
+  border-bottom: 1px solid rgba(245, 166, 35, 0.3);
+  font-weight: 600;
+}
+
+/* ============================================================
+   History backup/restore actions (gap 6 fix)
+   ============================================================ */
+
+.history-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--ink-border);
+  flex-shrink: 0;
+}
+
+.history-action-btn {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  background: var(--ink-raised);
+  color: var(--paper);
+  border: 1px solid var(--ink-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.history-action-btn:hover:not(:disabled) {
+  border-color: var(--teal-dim);
+  color: var(--teal);
+}
+
+.history-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.history-import-error {
+  padding: 8px 20px;
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  color: var(--amber);
+  background: rgba(245, 166, 35, 0.08);
+}
