@@ -42,7 +42,7 @@ export interface Segment {
   audioStart: number;
   audioEnd: number;
   wallTime: number;
-  spacing: "none" | "comma" | "line" | "paragraph" | "divider";
+  spacing: "none" | "ellipsis" | "comma" | "line" | "paragraph" | "divider";
 }
 
 export type ViewFormat = "prose" | "dialogue" | "notes";
@@ -208,14 +208,39 @@ export function classifyWord(
 // Thresholds tuned for classroom speech — normal speaking pauses
 // (1-2 seconds) should NOT create visual breaks. Only real pauses
 // (teacher stops to think, topic changes, turn changes) should.
+// "thinking" pause (1.2-2.5s) renders as ellipsis (...) for natural flow.
 export function classifyPause(
   gapMs: number
-): "none" | "comma" | "line" | "paragraph" | "divider" {
-  if (gapMs < 2500) return "none";       // normal speech flow
+): "none" | "ellipsis" | "comma" | "line" | "paragraph" | "divider" {
+  if (gapMs < 1200) return "none";        // normal speech flow
+  if (gapMs < 2500) return "ellipsis";    // thinking pause — show ...
   if (gapMs < 5000) return "comma";       // sentence-ending pause
   if (gapMs < 8000) return "line";        // noticeable break
   if (gapMs < 15000) return "paragraph";  // topic change / turn change
   return "divider";                        // real break, likely new section
+}
+
+// ===== Filler word detection =====
+// Detects hesitation sounds (umm, uh, hmm, err) in both English and Arabic
+// These should be rendered with ellipsis to show thinking, not as words
+const FILLER_WORDS = new Set([
+  // English fillers
+  "um", "umm", "ummm", "uh", "uhh", "uhhh", "hmm", "hmmm", "err", "errr",
+  "ah", "ahh", "ahhh", "eh", "ehh", "like", "basically", "literally",
+  "actually", "right", "okay", "ok", "so", "well", "look", "see",
+  // Arabic fillers / hesitation
+  "إم", "إمم", "إممم", "آم", "آمم", "اه", "آه", "اها", "يعني", "هذا",
+  "يع", "إي", "طيب", "خلاص", "وانا",
+]);
+
+export function isFillerWord(word: string): boolean {
+  const lower = word.toLowerCase().replace(/[^\w']/g, "");
+  if (FILLER_WORDS.has(lower)) return true;
+  // Detect repeated single-letter hesitation (m-m-m, u-u-u)
+  if (lower.length >= 3 && /^(\w)\1*(-\1+)+$/.test(lower)) return true;
+  // Detect elongated fillers (ummm, uhhhh)
+  if (/^(um|uh|ah|eh|hmm|err)+[a-z]*$/.test(lower) && lower.length > 3) return true;
+  return false;
 }
 
 // ===== Time formatting =====
@@ -270,7 +295,14 @@ export function buildExportText(segments: Segment[]): string {
   for (const seg of segments) {
     const time = formatTimestamp(seg.audioStart);
     const speaker = seg.speaker || "UU";
-    lines.push(`[${time}] Speaker ${speaker}: ${seg.transcript}`);
+    // Add spacing indicators for pauses
+    let prefix = "";
+    if (seg.spacing === "ellipsis") prefix = "… ";
+    else if (seg.spacing === "comma") prefix = ", ";
+    else if (seg.spacing === "line") prefix = "\n";
+    else if (seg.spacing === "paragraph") prefix = "\n\n";
+    else if (seg.spacing === "divider") prefix = "\n---\n";
+    lines.push(`[${time}] Speaker ${speaker}: ${prefix}${seg.transcript}`);
   }
   return lines.join("\n");
 }

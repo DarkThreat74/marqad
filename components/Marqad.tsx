@@ -17,6 +17,7 @@ import {
   buildExportText,
   isArabicText,
   isArabicWord,
+  isFillerWord,
   loadHistory,
   saveSession,
   deleteSession,
@@ -108,6 +109,10 @@ function renderWords(seg: Segment): React.ReactNode[] {
         nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
       }
       const classes = classifyWord(w, sentenceInitial);
+      // Mark filler words (um, uh, hmm) with a muted class
+      if (isFillerWord(w.content)) {
+        classes.push("filler-word");
+      }
       nodes.push(
         <span key={`w-${nodeIdx++}`} className={classes.join(" ")}>
           {w.content}
@@ -161,6 +166,7 @@ const SegmentView = memo(function SegmentView({
 
   return (
     <span>
+      {segment.spacing === "ellipsis" && <span className="thinking-pause">…</span>}
       {segment.spacing === "line" && <br />}
       {segment.spacing === "paragraph" && (
         <>

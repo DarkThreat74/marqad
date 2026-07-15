@@ -6,6 +6,7 @@ const fraunces = Fraunces({
   subsets: ["latin"],
   variable: "--font-fraunces",
   display: "swap",
+  preload: true,
 });
 
 const amiri = Amiri({
@@ -13,12 +14,14 @@ const amiri = Amiri({
   subsets: ["arabic", "latin"],
   variable: "--font-amiri",
   display: "swap",
+  preload: false,
 });
 
 const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   variable: "--font-jetbrains",
   display: "swap",
+  preload: false,
 });
 
 export const metadata: Metadata = {
