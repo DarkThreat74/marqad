@@ -648,7 +648,6 @@ html, body {
 
 .arabic {
   font-family: var(--font-arabic);
-  direction: rtl;
   unicode-bidi: isolate;
   font-size: 1.08em;
 }
