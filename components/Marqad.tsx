@@ -18,6 +18,9 @@ import {
   isArabicText,
   isArabicWord,
   isFillerWord,
+  loadVocabCache,
+  saveVocabCache,
+  type VocabCacheEntry,
   loadHistory,
   saveSession,
   deleteSession,
@@ -426,7 +429,7 @@ function UsageBar({ stats }: { stats: UsageStats }) {
 // Main Marqad component
 // ============================================================
 
-type RecordingState = "idle" | "connecting" | "recording" | "paused" | "stopping";
+type RecordingState = "idle" | "connecting" | "recording" | "paused" | "stopping" | "processing";
 
 export default function Marqad() {
   // --- State ---
@@ -461,6 +464,20 @@ export default function Marqad() {
   const [fixSaving, setFixSaving] = useState(false);
   const [fixToast, setFixToast] = useState<string | null>(null);
   const transcriptAreaRef = useRef<HTMLDivElement | null>(null);
+
+  // --- Recording mode (Live vs Batch) ---
+  const [recordingMode, setRecordingMode] = useState<"live" | "batch">("live");
+  const [batchRecording, setBatchRecording] = useState(false);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<string>("");
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const batchChunksRef = useRef<Blob[]>([]);
+  const batchJobIdRef = useRef<string | null>(null);
+  const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // --- Vocab refresh ---
+  const [vocabRefreshing, setVocabRefreshing] = useState(false);
+  const [vocabToast, setVocabToast] = useState<string | null>(null);
 
   // --- Refs ---
   const wsRef = useRef<WebSocket | null>(null);
@@ -942,24 +959,18 @@ export default function Marqad() {
     wsRef.current = ws;
 
     ws.onopen = async () => {
-      // Fetch user vocab corrections and merge into additional_vocab
+      // Use cached vocab immediately — don't block session start on a network fetch
+      const cache = loadVocabCache();
       let extraVocab: Array<{ content: string; sounds_like: string[] }> | undefined;
-      try {
-        const vocabResp = await fetch("/api/vocab-correction");
-        if (vocabResp.ok) {
-          const vocabData = await vocabResp.json();
-          if (vocabData.corrections && vocabData.corrections.length > 0) {
-            extraVocab = vocabData.corrections.map((c: any) => ({
-              content: c.correct_text,
-              sounds_like: c.sounds_like || [],
-            }));
-          }
-        }
-      } catch {
-        // Non-fatal — proceed with baseline vocab only
+      if (cache && cache.vocab.length > 0) {
+        extraVocab = cache.vocab;
       }
       ws.send(buildStartRecognition(extraVocab));
       setStatusText("Starting recognition...");
+
+      // Background refresh (non-blocking) — check if cache is stale
+      // If so, refetch and update cache for the NEXT session
+      refreshVocabInBackground();
     };
 
     ws.onmessage = handleWsMessage;
@@ -1032,6 +1043,22 @@ export default function Marqad() {
       return;
     }
 
+    // Branch: batch mode vs live mode
+    if (recordingMode === "batch") {
+      // Batch mode — record locally, no WebSocket
+      if (viewingRecord) {
+        setViewingRecord(null);
+        setEditText("");
+        setEditDirty(false);
+      }
+      setSegments([]);
+      segmentsRef.current = [];
+      setPartial("");
+      startBatchRecording();
+      return;
+    }
+
+    // Live mode — existing behavior
     setRecState("connecting");
     setStatusText("Requesting microphone...");
     setStatusKind("connecting");
@@ -1275,6 +1302,14 @@ export default function Marqad() {
   }, []);
 
   const stopRecording = useCallback(() => {
+    // Batch mode: stop batch recording and submit for transcription
+    if (batchRecording) {
+      stopBatchRecording();
+      return;
+    }
+    // Don't allow stop during batch processing (the job is already submitted)
+    if (batchProcessing) return;
+
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
     teardown();
@@ -1432,6 +1467,301 @@ export default function Marqad() {
   }, [fixPopover.wrongText, fixPopover.correctText]);
 
   // ============================================================
+  // Vocabulary cache — background refresh + manual refresh
+  // ============================================================
+
+  const refreshVocabInBackground = useCallback(async () => {
+    try {
+      const resp = await fetch("/api/vocab-correction");
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const corrections = data.corrections || [];
+      if (corrections.length === 0) return;
+
+      // Check if cache is stale
+      const cache = loadVocabCache();
+      const newCount = corrections.length;
+      const newMax = corrections.reduce((max: string, c: any) => {
+        const ts = c.last_confirmed_at || c.first_added_at || "";
+        return ts > max ? ts : max;
+      }, "");
+      if (cache && cache.count === newCount && cache.maxLastConfirmed === newMax) {
+        return; // cache is fresh
+      }
+
+      // Cache is stale — update it for the next session
+      const vocab = corrections.map((c: any) => ({
+        content: c.correct_text,
+        sounds_like: c.sounds_like || [],
+      }));
+      saveVocabCache({
+        vocab,
+        count: newCount,
+        maxLastConfirmed: newMax,
+        cachedAt: Date.now(),
+      });
+    } catch {
+      // Non-fatal — background refresh failure is silent
+    }
+  }, []);
+
+  const refreshVocabNow = useCallback(async () => {
+    setVocabRefreshing(true);
+    try {
+      const resp = await fetch("/api/vocab-correction");
+      if (!resp.ok) throw new Error("Fetch failed");
+      const data = await resp.json();
+      const corrections = data.corrections || [];
+      if (corrections.length > 0) {
+        const vocab = corrections.map((c: any) => ({
+          content: c.correct_text,
+          sounds_like: c.sounds_like || [],
+        }));
+        const newMax = corrections.reduce((max: string, c: any) => {
+          const ts = c.last_confirmed_at || c.first_added_at || "";
+          return ts > max ? ts : max;
+        }, "");
+        saveVocabCache({
+          vocab,
+          count: corrections.length,
+          maxLastConfirmed: newMax,
+          cachedAt: Date.now(),
+        });
+        setVocabToast(`Vocabulary refreshed — ${corrections.length} corrections loaded.`);
+      } else {
+        setVocabToast("No corrections to load yet.");
+      }
+    } catch {
+      setVocabToast("Could not refresh vocabulary — check your connection.");
+    }
+    setTimeout(() => setVocabToast(null), 3000);
+    setVocabRefreshing(false);
+  }, []);
+
+  // ============================================================
+  // Batch transcription mode
+  // ============================================================
+
+  const startBatchRecording = useCallback(async () => {
+    if (!navigator.onLine) {
+      setStatusText("You're offline — check your internet connection");
+      setStatusKind("error");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+
+      // Use MediaRecorder for local audio capture (compressed webm/opus)
+      const recorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm",
+      });
+      batchChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) batchChunksRef.current.push(e.data);
+      };
+      recorder.start(1000); // collect data every 1 second
+      mediaRecorderRef.current = recorder;
+
+      setBatchRecording(true);
+      setRecState("recording");
+      setStatusText("Recording (batch mode)");
+      setStatusKind("active");
+      setElapsedSec(0);
+      elapsedRef.current = 0;
+      sessionStreamingSecRef.current = 0;
+      sessionStartRef.current = Date.now();
+
+      // Start elapsed timer
+      timerRef.current = setInterval(() => {
+        elapsedRef.current += 1;
+        setElapsedSec(elapsedRef.current);
+      }, 1000);
+
+      // Start streaming seconds tracker for usage billing
+      streamingTimerRef.current = setInterval(() => {
+        sessionStreamingSecRef.current += 1;
+        if (sessionStreamingSecRef.current % 10 === 0) {
+          addToMonthlySecondsDB(10).catch(() => addToMonthlySeconds(10));
+          setUsageStats(getUsageStats(sessionStreamingSecRef.current));
+        }
+      }, 1000);
+    } catch (err: any) {
+      if (err.name === "NotAllowedError") {
+        setStatusText("Microphone access denied — allow mic access in your browser");
+      } else if (err.name === "NotFoundError") {
+        setStatusText("No microphone found — connect a mic and try again");
+      } else {
+        setStatusText(`Microphone error: ${err.message}`);
+      }
+      setStatusKind("error");
+    }
+  }, []);
+
+  const stopBatchRecording = useCallback(async () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+
+    // Stop timers
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
+
+    // Save final usage seconds
+    const remainder = sessionStreamingSecRef.current % 10;
+    if (remainder > 0) {
+      addToMonthlySecondsDB(remainder).catch(() => addToMonthlySeconds(remainder));
+      setUsageStats(getUsageStats(sessionStreamingSecRef.current));
+    }
+
+    // Stop recorder and wait for final data
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => resolve();
+      recorder.stop();
+    });
+
+    // Stop mic stream
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = null;
+    }
+
+    setBatchRecording(false);
+    setBatchProcessing(true);
+    setRecState("processing");
+    setBatchStatus("Uploading audio to Speechmatics...");
+
+    // Create audio blob from collected chunks
+    const audioBlob = new Blob(batchChunksRef.current, { type: "audio/webm" });
+
+    try {
+      // Step 1: Get a batch JWT from the Edge Function
+      const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
+      if (!tokenResp.ok) throw new Error("Could not get batch token");
+      const tokenData = await tokenResp.json();
+      const batchJwt = tokenData.jwt;
+      if (!batchJwt) throw new Error("No batch JWT in response");
+
+      // Step 2: Build config (reuse the same config as live mode)
+      const cache = loadVocabCache();
+      const extraVocab = cache?.vocab;
+      const config = buildStartRecognition(extraVocab);
+      // Extract just the transcription_config from the StartRecognition message
+      const parsed = JSON.parse(config);
+      const batchConfig = {
+        type: "transcription",
+        transcription_config: parsed.transcription_config,
+      };
+
+      // Step 3: Create batch job — upload audio directly to Speechmatics
+      const formData = new FormData();
+      formData.append("data_file", audioBlob, "recording.webm");
+      formData.append("config", JSON.stringify(batchConfig));
+
+      setBatchStatus("Submitting to Speechmatics Batch API...");
+
+      const jobResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${batchJwt}`,
+        },
+        body: formData,
+      });
+
+      if (!jobResp.ok) {
+        const errText = await jobResp.text();
+        throw new Error(`Batch job creation failed: ${errText}`);
+      }
+
+      const jobData = await jobResp.json();
+      const jobId = jobData.id;
+      if (!jobId) throw new Error("No job ID in response");
+      batchJobIdRef.current = jobId;
+
+      // Step 4: Poll job status every 5 seconds
+      setBatchStatus("Processing transcript... this may take a minute.");
+
+      batchPollRef.current = setInterval(async () => {
+        try {
+          const statusResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/${jobId}`, {
+            headers: { "Authorization": `Bearer ${batchJwt}` },
+          });
+          if (!statusResp.ok) return;
+          const statusData = await statusResp.json();
+
+          if (statusData.job?.status === "done") {
+            // Stop polling
+            if (batchPollRef.current) {
+              clearInterval(batchPollRef.current);
+              batchPollRef.current = null;
+            }
+
+            setBatchStatus("Fetching transcript...");
+
+            // Fetch transcript (txt format for simplicity)
+            const transcriptResp = await fetch(
+              `${CONFIG.BATCH_API_HOST}/jobs/${jobId}/transcript?format=txt`,
+              { headers: { "Authorization": `Bearer ${batchJwt}` } }
+            );
+
+            if (!transcriptResp.ok) throw new Error("Could not fetch transcript");
+            const transcriptText = await transcriptResp.text();
+
+            // Save to history (same as live mode)
+            const record: SessionRecord = {
+              id: `batch-${Date.now()}`,
+              date: new Date().toISOString(),
+              durationSec: elapsedRef.current,
+              segmentCount: 0,
+              preview: transcriptText.slice(0, 120).replace(/\n/g, " "),
+              exportText: transcriptText,
+            };
+            const updated = saveSession(record);
+            setHistory(updated);
+
+            // Show the transcript in viewing mode
+            setViewingRecord(record);
+            setEditText(transcriptText);
+
+            setBatchProcessing(false);
+            setRecState("idle");
+            setStatusText("Ready");
+            setStatusKind("idle");
+            setBatchStatus("");
+          } else if (statusData.job?.status === "rejected") {
+            if (batchPollRef.current) {
+              clearInterval(batchPollRef.current);
+              batchPollRef.current = null;
+            }
+            const rejectReason = statusData.job?.error || "unknown error";
+            setBatchStatus(`Transcription failed: ${rejectReason}`);
+            setBatchProcessing(false);
+            setRecState("idle");
+            setStatusKind("error");
+            setStatusText(`Batch transcription failed: ${rejectReason}`);
+          }
+        } catch {
+          // Polling error — keep trying, will retry on next interval
+        }
+      }, 5000);
+
+    } catch (err: any) {
+      setBatchProcessing(false);
+      setRecState("idle");
+      setStatusKind("error");
+      setStatusText(`Batch error: ${err.message}`);
+      setBatchStatus("");
+    }
+  }, []);
+
+  // ============================================================
   // History handlers
   // ============================================================
 
@@ -1544,8 +1874,28 @@ export default function Marqad() {
         </div>
 
         <div className="rail-controls">
+          {/* Mode selector — only visible when idle */}
+          {recState === "idle" && !batchProcessing && (
+            <div className="mode-selector">
+              <button
+                className={`mode-btn ${recordingMode === "live" ? "active" : ""}`}
+                onClick={() => setRecordingMode("live")}
+                title="Live: see the transcript as you speak"
+              >
+                Live
+              </button>
+              <button
+                className={`mode-btn ${recordingMode === "batch" ? "active" : ""}`}
+                onClick={() => setRecordingMode("batch")}
+                title="Record & transcribe after: no live preview, typically more accurate"
+              >
+                Record &amp; after
+              </button>
+            </div>
+          )}
+
           {/* Mic / Start button with accidental-start prevention */}
-          {recState === "idle" ? (
+          {recState === "idle" && !batchProcessing ? (
             <button
               className={`mic-btn ${armed ? "armed" : ""}`}
               onClick={armed ? confirmStart : armStart}
@@ -1615,6 +1965,17 @@ export default function Marqad() {
         <div className="rail-spacer" />
 
         <div className="rail-right">
+          {/* Refresh vocabulary — small, unobtrusive */}
+          {recState === "idle" && !batchProcessing && (
+            <button
+              className="vocab-refresh-btn"
+              onClick={refreshVocabNow}
+              disabled={vocabRefreshing}
+              title="Refresh vocabulary corrections from server"
+            >
+              {vocabRefreshing ? "…" : "↻"}
+            </button>
+          )}
           <UsageBar stats={usageStats || getUsageStats(0)} />
 
           {viewingRecord ? (
@@ -1744,7 +2105,38 @@ export default function Marqad() {
           ref={transcriptAreaRef}
           onMouseUp={handleTranscriptMouseUp}
         >
-          {viewingRecord ? (
+          {batchRecording || batchProcessing ? (
+            /* ===== Batch mode: recording or processing ===== */
+            <div className="batch-mode">
+              {batchRecording ? (
+                <>
+                  <div className="batch-recording-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="12" cy="12" r="6" />
+                    </svg>
+                  </div>
+                  <div className="batch-recording-text">
+                    Recording — the transcript will be ready shortly after you stop.
+                  </div>
+                  <div className="batch-recording-time">
+                    {formatTimestamp(elapsedSec)}
+                  </div>
+                  <div className="batch-recording-hint">
+                    No live preview in this mode. Press the stop button when done.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="batch-processing-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                    </svg>
+                  </div>
+                  <div className="batch-processing-text">{batchStatus}</div>
+                </>
+              )}
+            </div>
+          ) : viewingRecord ? (
             /* ===== Viewing mode: editable past session ===== */
             <div className="viewing-mode">
               <div className="viewing-meta">
@@ -1849,6 +2241,11 @@ export default function Marqad() {
       {/* ===== Fix toast ===== */}
       {fixToast && (
         <div className="fix-toast">{fixToast}</div>
+      )}
+
+      {/* ===== Vocab refresh toast ===== */}
+      {vocabToast && (
+        <div className="fix-toast">{vocabToast}</div>
       )}
 
       {/* ===== History Panel ===== */}

@@ -17,12 +17,53 @@ export const CONFIG = {
   TOKEN_ENDPOINT:
     process.env.NEXT_PUBLIC_SPEECHMATICS_TOKEN_ENDPOINT ||
     "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/get-speechmatics-token",
+  BATCH_TOKEN_ENDPOINT:
+    process.env.NEXT_PUBLIC_SUPABASE_URL
+      ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/batch-token`
+      : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/batch-token",
   WS_HOST: "wss://us.rt.speechmatics.com/v2",
+  BATCH_API_HOST: "https://us1.asr.api.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
   MAX_DELAY: 3.0, // accuracy over latency — transcripts reviewed after class, not live
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
+
+// ===== Vocabulary cache (Section 1.2 — localStorage caching) =====
+// Caches the merged additional_vocab array so session start doesn't block
+// on a network fetch. Background refresh keeps it fresh for the NEXT session.
+const VOCAB_CACHE_KEY = "marqad_vocab_cache";
+
+export interface VocabCacheEntry {
+  vocab: Array<{ content: string; sounds_like: string[] }>;
+  count: number;
+  maxLastConfirmed: string; // ISO string of max(last_confirmed_at) at fetch time
+  cachedAt: number; // Date.now() when cached
+}
+
+export function loadVocabCache(): VocabCacheEntry | null {
+  try {
+    const raw = localStorage.getItem(VOCAB_CACHE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function saveVocabCache(entry: VocabCacheEntry): void {
+  try {
+    localStorage.setItem(VOCAB_CACHE_KEY, JSON.stringify(entry));
+  } catch {
+    // localStorage might be full or disabled — non-fatal
+  }
+}
+
+export function clearVocabCache(): void {
+  try {
+    localStorage.removeItem(VOCAB_CACHE_KEY);
+  } catch {}
+}
 
 // ===== Types =====
 export interface WordToken {
