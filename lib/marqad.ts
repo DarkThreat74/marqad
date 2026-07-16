@@ -89,7 +89,7 @@ export interface Segment {
   spacing: "none" | "ellipsis" | "comma" | "line" | "paragraph" | "divider";
 }
 
-export type ViewFormat = "prose" | "dialogue" | "notes";
+export type ViewFormat = "prose" | "dialogue";
 
 // ===== Speaker colors (Section 3.6 — ~7 stable accent colors) =====
 export const SPEAKER_COLORS = [

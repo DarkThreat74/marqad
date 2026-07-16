@@ -172,20 +172,6 @@ const SegmentView = memo(function SegmentView({
     );
   }
 
-  if (format === "notes") {
-    // Notes mode: bullet-style, no timestamp, more compact.
-    // Designed for quick scanning — just speaker + text, indented.
-    return (
-      <div className="notes-block">
-        <div className="notes-header">
-          <span className="speaker-swatch" style={{ background: color }} />
-          <span className="speaker-label">Speaker {segment.speaker}</span>
-        </div>
-        <div className="notes-text">{renderWords(segment)}</div>
-      </div>
-    );
-  }
-
   return (
     <span>
       {segment.spacing === "ellipsis" && <span className="thinking-pause">…</span>}
@@ -2225,7 +2211,6 @@ export default function Marqad() {
                   >
                     <option value="prose">Prose</option>
                     <option value="dialogue">Dialogue</option>
-                    <option value="notes">Notes</option>
                   </select>
 
                   <button
