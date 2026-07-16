@@ -1917,10 +1917,12 @@ export default function Marqad() {
       batchJobIdRef.current = jobId;
       console.log("[Marqad] Batch: job created, ID:", jobId);
 
-      // Step 4: Poll job status every 5 seconds
-      // For a 1-hour recording, batch processing may take several minutes.
+      // Step 4: Poll job status every 2 seconds
+      // The Batch API has a fixed overhead (~10-15s) for job setup and model
+      // loading, even for very short audio. Poll every 2s so short recordings
+      // are detected as done as soon as possible.
       // Timeout after 15 minutes to avoid infinite polling.
-      setBatchStatus("Processing transcript... this may take a few minutes for a long recording.");
+      setBatchStatus("Processing transcript...");
 
       const pollStartTime = Date.now();
       const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
@@ -1949,7 +1951,9 @@ export default function Marqad() {
           }
           const statusData = await statusResp.json();
           const status = statusData.job?.status;
-          console.log("[Marqad] Batch: job status:", status);
+          const elapsed = Math.round((Date.now() - pollStartTime) / 1000);
+          console.log(`[Marqad] Batch: job status: ${status} (${elapsed}s)`);
+          setBatchStatus(`Processing transcript... ${elapsed}s elapsed`);
 
           if (status === "done") {
             // Stop polling
@@ -2016,7 +2020,7 @@ export default function Marqad() {
           console.error("[Marqad] Batch: polling error:", pollErr);
           // Polling error — keep trying, will retry on next interval
         }
-      }, 5000);
+      }, 2000);
 
     } catch (err: any) {
       console.error("[Marqad] Batch: fatal error:", err);
