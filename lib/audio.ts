@@ -217,3 +217,72 @@ export async function deleteAudioFromDB(sessionId: string): Promise<void> {
     tx.onerror = () => { db.close(); reject(tx.error); };
   });
 }
+
+// ============================================================
+// Supabase Storage — upload/download audio to the cloud
+// Audio files are stored in the 'marqad-audio' bucket so they
+// persist across devices and browsers.
+// ============================================================
+
+import { createClient } from "@supabase/supabase-js";
+
+function getStorageClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || "";
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
+
+/**
+ * Upload an audio blob to Supabase Storage.
+ * Returns the storage path (e.g. "marqad-user/session-123.webm")
+ * or null if the upload failed.
+ */
+export async function uploadAudioToStorage(
+  sessionId: string,
+  blob: Blob
+): Promise<string | null> {
+  const client = getStorageClient();
+  if (!client) {
+    console.warn("[Marqad] Supabase not configured — audio not uploaded");
+    return null;
+  }
+
+  const path = `marqad-user/${sessionId}.webm`;
+  try {
+    const { error } = await client.storage
+      .from("marqad-audio")
+      .upload(path, blob, {
+        contentType: "audio/webm",
+        upsert: true,
+      });
+
+    if (error) {
+      console.warn("[Marqad] Audio upload failed:", error.message);
+      return null;
+    }
+
+    console.log("[Marqad] Audio uploaded to storage:", path);
+    return path;
+  } catch (err) {
+    console.warn("[Marqad] Audio upload error:", err);
+    return null;
+  }
+}
+
+/**
+ * Get a public URL for an audio file in Supabase Storage.
+ */
+export function getAudioUrl(audioPath: string): string | null {
+  const client = getStorageClient();
+  if (!client) return null;
+
+  try {
+    const { data } = client.storage
+      .from("marqad-audio")
+      .getPublicUrl(audioPath);
+    return data.publicUrl;
+  } catch {
+    return null;
+  }
+}

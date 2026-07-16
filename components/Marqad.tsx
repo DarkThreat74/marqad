@@ -32,8 +32,11 @@ import {
   loadMonthlySeconds,
   exportHistoryJSON,
   importHistoryJSON,
+  saveSessionToDB,
+  loadHistoryFromDB,
+  deleteSessionFromDB,
 } from "@/lib/marqad";
-import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB } from "@/lib/audio";
+import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, uploadAudioToStorage, getAudioUrl } from "@/lib/audio";
 
 // ============================================================
 // Memoized segment view
@@ -518,7 +521,18 @@ export default function Marqad() {
 
   // Load history + usage on mount
   useEffect(() => {
+    // Load from localStorage first (instant, offline-capable)
     setHistory(loadHistory());
+    // Then load from database (authoritative, cross-device)
+    loadHistoryFromDB().then((dbHistory) => {
+      if (dbHistory.length > 0) {
+        setHistory(dbHistory);
+        // Also update localStorage cache
+        try {
+          localStorage.setItem("marqad-history", JSON.stringify(dbHistory));
+        } catch {}
+      }
+    });
     // Load usage from database (async)
     loadMonthlySecondsFromDB().then(() => {
       setUsageStats(getUsageStats(0));
@@ -1462,10 +1476,25 @@ export default function Marqad() {
 
     // Stop local recording and keep the audio blob for download
     const sessionId = `session-${Date.now()}`;
-    stopLocalRecording().then((blob) => {
+    stopLocalRecording().then(async (blob) => {
       if (blob) {
         setAudioBlob(blob);
         console.log("[Marqad] Local recording saved:", blob.size, "bytes");
+        // Upload audio to Supabase Storage (cloud persistence)
+        const audioPath = await uploadAudioToStorage(sessionId, blob);
+        if (audioPath) {
+          // Update the session record with the audio path
+          saveSessionToDB({
+            id: sessionId,
+            date: new Date().toISOString(),
+            durationSec: streamingSec,
+            segmentCount: segmentsRef.current.length,
+            preview: segmentsRef.current.map((s) => s.transcript).join(" ").slice(0, 120) || "(empty session)",
+            exportText: buildExportText(segmentsRef.current),
+            audioPath,
+            audioSize: blob.size,
+          }).catch(() => {});
+        }
       }
     });
 
@@ -1475,7 +1504,7 @@ export default function Marqad() {
     setStatusKind("idle");
     setPartial("");
 
-    // Save to history
+    // Save to history (localStorage + database)
     const currentSegments = segmentsRef.current;
     if (currentSegments.length > 0) {
       const exportText = buildExportText(currentSegments);
@@ -1493,6 +1522,8 @@ export default function Marqad() {
       };
       const updated = saveSession(record);
       setHistory(updated);
+      // Also save to database
+      saveSessionToDB(record).catch(() => {});
     }
 
     // Update monthly usage — only the remainder since last 10-second save
@@ -1991,9 +2022,10 @@ export default function Marqad() {
               throw new Error("Transcript is empty — the recording may have been silent");
             }
 
-            // Save to history (same as live mode)
+            // Save to history (localStorage + database)
+            const batchSessionId = `batch-${Date.now()}`;
             const record: SessionRecord = {
-              id: `batch-${Date.now()}`,
+              id: batchSessionId,
               date: new Date().toISOString(),
               durationSec: elapsedRef.current,
               segmentCount: 0,
@@ -2002,6 +2034,22 @@ export default function Marqad() {
             };
             const updated = saveSession(record);
             setHistory(updated);
+            // Save transcript to database
+            saveSessionToDB(record).catch(() => {});
+
+            // Upload audio to Supabase Storage if we have it
+            if (audioBlob) {
+              uploadAudioToStorage(batchSessionId, audioBlob).then((audioPath) => {
+                if (audioPath) {
+                  // Update the DB record with the audio path
+                  saveSessionToDB({
+                    ...record,
+                    audioPath,
+                    audioSize: audioBlob.size,
+                  }).catch(() => {});
+                }
+              });
+            }
 
             // Show the transcript in viewing mode
             setViewingRecord(record);
@@ -2097,6 +2145,8 @@ export default function Marqad() {
   const handleDeleteHistory = useCallback((id: string) => {
     const updated = deleteSession(id);
     setHistory(updated);
+    // Also delete from database (and its audio from storage)
+    deleteSessionFromDB(id).catch(() => {});
     // If we're viewing the deleted session, close it
     if (viewingRecord?.id === id) {
       setViewingRecord(null);
@@ -2150,20 +2200,20 @@ export default function Marqad() {
   // Save edited transcript as a new history entry
   const handleSaveEdit = useCallback(() => {
     if (!viewingRecord || !editDirty) return;
-    const newRecord: SessionRecord = {
-      id: `session-${Date.now()}`,
-      date: new Date().toISOString(),
-      durationSec: viewingRecord.durationSec,
-      segmentCount: viewingRecord.segmentCount,
+    // Update the existing record (keep same ID so DB upserts)
+    const updatedRecord: SessionRecord = {
+      ...viewingRecord,
       preview: editText.slice(0, 120).replace(/\n/g, " "),
       exportText: editText,
     };
-    const updated = saveSession(newRecord);
+    const updated = saveSession(updatedRecord);
     setHistory(updated);
-    setViewingRecord(newRecord);
+    setViewingRecord(updatedRecord);
     setEditDirty(false);
     setEditSaved(true);
     setTimeout(() => setEditSaved(false), 2000);
+    // Save edit to database
+    saveSessionToDB(updatedRecord).catch(() => {});
   }, [viewingRecord, editDirty, editText]);
 
   // ============================================================

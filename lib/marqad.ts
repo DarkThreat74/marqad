@@ -584,10 +584,16 @@ export interface SessionRecord {
   segmentCount: number;
   preview: string;       // first ~120 chars of transcript
   exportText: string;    // full export text for re-copy/view
+  audioPath?: string | null;    // Supabase Storage path (if audio was saved)
+  audioSize?: number | null;    // audio file size in bytes
 }
 
 const HISTORY_KEY = "marqad-history";
 const MAX_HISTORY_ENTRIES = 50;
+const SESSIONS_ENDPOINT =
+  process.env.NEXT_PUBLIC_SUPABASE_URL
+    ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/marqad-sessions`
+    : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/marqad-sessions";
 
 export function loadHistory(): SessionRecord[] {
   if (typeof window === "undefined") return [];
@@ -636,6 +642,75 @@ export function clearHistory(): void {
   try {
     localStorage.removeItem(HISTORY_KEY);
   } catch {}
+}
+
+// ============================================================
+// Session History — Database-backed (Supabase)
+// Sessions are saved to the marqad_sessions table so they persist
+// across devices and browsers. localStorage is used as a cache/fallback.
+// Audio files are stored in Supabase Storage bucket 'marqad-audio'.
+// ============================================================
+
+// Save a session to the database (upsert)
+export async function saveSessionToDB(record: SessionRecord): Promise<void> {
+  try {
+    const resp = await fetch(SESSIONS_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: record.id,
+        date: record.date,
+        duration_sec: record.durationSec,
+        segment_count: record.segmentCount,
+        preview: record.preview,
+        export_text: record.exportText,
+        audio_path: record.audioPath || null,
+        audio_size: record.audioSize || null,
+        audio_format: "webm",
+      }),
+    });
+    if (!resp.ok) {
+      console.warn("[Marqad] saveSessionToDB failed:", resp.status);
+    }
+  } catch (err) {
+    console.warn("[Marqad] saveSessionToDB error:", err);
+  }
+}
+
+// Load all sessions from the database
+export async function loadHistoryFromDB(): Promise<SessionRecord[]> {
+  try {
+    const resp = await fetch(SESSIONS_ENDPOINT, { method: "GET" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const sessions = data.sessions || [];
+    // Map DB rows to SessionRecord
+    return sessions.map((s: any) => ({
+      id: s.id,
+      date: s.date,
+      durationSec: s.duration_sec || 0,
+      segmentCount: s.segment_count || 0,
+      preview: s.preview || "",
+      exportText: s.export_text || "",
+      audioPath: s.audio_path || null,
+      audioSize: s.audio_size || null,
+    }));
+  } catch (err) {
+    console.warn("[Marqad] loadHistoryFromDB error:", err);
+    return [];
+  }
+}
+
+// Delete a session from the database (also deletes audio from storage)
+export async function deleteSessionFromDB(id: string): Promise<void> {
+  try {
+    const resp = await fetch(`${SESSIONS_ENDPOINT}/${id}`, { method: "DELETE" });
+    if (!resp.ok) {
+      console.warn("[Marqad] deleteSessionFromDB failed:", resp.status);
+    }
+  } catch (err) {
+    console.warn("[Marqad] deleteSessionFromDB error:", err);
+  }
 }
 
 // ============================================================
