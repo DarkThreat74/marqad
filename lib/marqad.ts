@@ -25,7 +25,8 @@ export const CONFIG = {
   BATCH_API_HOST: "https://us1.asr.api.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
-  MAX_DELAY: 3.0, // accuracy over latency — transcripts reviewed after class, not live
+  MAX_DELAY: 1.5, // balance accuracy and live responsiveness — lower delay means
+                  // faster finalization when switching between Arabic and English
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
 

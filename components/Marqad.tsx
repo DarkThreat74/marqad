@@ -706,7 +706,7 @@ export default function Marqad() {
         break;
 
       case "AddPartialTranscript":
-        // Clear any previous partial and show the new one
+        // Show partial immediately
         if (msg.metadata?.transcript) {
           setPartial(msg.metadata.transcript);
         } else {
@@ -715,8 +715,6 @@ export default function Marqad() {
         break;
 
       case "AddTranscript": {
-        // Don't clear partial immediately — keep it until the next partial
-        // arrives to avoid a flash of empty text during language switches
         const seg = parseTranscript(msg);
         if (seg) {
           setSegments((prev) => {
@@ -745,8 +743,10 @@ export default function Marqad() {
             return next;
           });
         }
-        // Clear partial after a short delay to avoid flash during language switches
-        setTimeout(() => setPartial(""), 150);
+        // Clear partial immediately — the final transcript is now rendered
+        // in the segments above. Keeping the partial would show duplicate
+        // text. The next AddPartialTranscript arrives within milliseconds.
+        setPartial("");
         break;
       }
 
@@ -2336,7 +2336,14 @@ export default function Marqad() {
                 />
               ))}
 
-              {partial && <span className="interim"> {partial}</span>}
+              {partial && (
+                <span
+                  className="interim"
+                  dir={isArabicText(partial) ? "rtl" : "ltr"}
+                >
+                  {" "}{partial}
+                </span>
+              )}
             </>
           )}
         </div>
