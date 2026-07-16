@@ -493,6 +493,9 @@ export default function Marqad() {
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wakeLockRef = useRef<any>(null); // Screen Wake Lock — keeps screen on during recording
+  const startBatchRecordingRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const acquireWakeLockRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const lastAudioEndRef = useRef<number | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
   const segIdCounter = useRef(0);
@@ -1112,7 +1115,7 @@ export default function Marqad() {
       setSegments([]);
       segmentsRef.current = [];
       setPartial("");
-      startBatchRecording();
+      startBatchRecordingRef.current();
       return;
     }
 
@@ -1202,6 +1205,9 @@ export default function Marqad() {
 
       await connectWebSocket();
 
+      // Keep screen on during recording
+      acquireWakeLockRef.current();
+
       // Start elapsed time tracker (counts wall time for display)
       timerRef.current = setInterval(() => {
         elapsedRef.current += 1;
@@ -1242,7 +1248,7 @@ export default function Marqad() {
       shouldReconnectRef.current = false;
       teardown();
     }
-  }, [recState, connectWebSocket, viewingRecord]);
+  }, [recState, connectWebSocket, viewingRecord, recordingMode]);
 
   // ============================================================
   // Pause / Resume
@@ -1306,6 +1312,8 @@ export default function Marqad() {
     if (startTimeoutRef.current) { clearTimeout(startTimeoutRef.current); startTimeoutRef.current = null; }
     // Cancel animation frame
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+    // Release wake lock
+    releaseWakeLock();
 
     // Close WebSocket
     if (wsRef.current) {
@@ -1602,7 +1610,48 @@ export default function Marqad() {
   // Batch transcription mode
   // ============================================================
 
+  // Wake Lock — keeps the screen on during recording so a 1-hour class
+  // doesn't get interrupted by the screen sleeping. Re-acquires on
+  // visibilitychange (e.g. if user switches tabs and comes back).
+  const acquireWakeLock = useCallback(async () => {
+    try {
+      if ("wakeLock" in navigator) {
+        wakeLockRef.current = await (navigator as any).wakeLock.request("screen");
+        console.log("[Marqad] Wake Lock acquired — screen will stay on");
+      }
+    } catch {
+      // Wake Lock not supported or denied — non-fatal
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(() => {
+    if (wakeLockRef.current) {
+      try { wakeLockRef.current.release(); } catch {}
+      wakeLockRef.current = null;
+      console.log("[Marqad] Wake Lock released");
+    }
+  }, []);
+
+  // Re-acquire wake lock when tab becomes visible again + resume AudioContext
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        // Re-acquire wake lock if recording
+        if ((recState === "recording" || batchRecording) && !wakeLockRef.current) {
+          acquireWakeLock();
+        }
+        // Resume AudioContext if it was suspended (browser suspends it in background)
+        if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
+          audioCtxRef.current.resume().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [recState, batchRecording, acquireWakeLock]);
+
   const startBatchRecording = useCallback(async () => {
+    startBatchRecordingRef.current = startBatchRecording;
     if (!navigator.onLine) {
       setStatusText("You're offline — check your internet connection");
       setStatusKind("error");
@@ -1639,6 +1688,7 @@ export default function Marqad() {
       elapsedRef.current = 0;
       sessionStreamingSecRef.current = 0;
       sessionStartRef.current = Date.now();
+      acquireWakeLock();
 
       // Start elapsed timer
       timerRef.current = setInterval(() => {
@@ -1664,7 +1714,15 @@ export default function Marqad() {
       }
       setStatusKind("error");
     }
-  }, []);
+  }, [acquireWakeLock]);
+
+  // Keep refs in sync so confirmStart can call them without ordering issues
+  useEffect(() => {
+    startBatchRecordingRef.current = startBatchRecording;
+  }, [startBatchRecording]);
+  useEffect(() => {
+    acquireWakeLockRef.current = acquireWakeLock;
+  }, [acquireWakeLock]);
 
   const stopBatchRecording = useCallback(async () => {
     const recorder = mediaRecorderRef.current;
@@ -1692,6 +1750,9 @@ export default function Marqad() {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
     }
+
+    // Release wake lock — recording is done, screen can sleep now
+    releaseWakeLock();
 
     setBatchRecording(false);
     setBatchProcessing(true);
@@ -1746,9 +1807,27 @@ export default function Marqad() {
       batchJobIdRef.current = jobId;
 
       // Step 4: Poll job status every 5 seconds
-      setBatchStatus("Processing transcript... this may take a minute.");
+      // For a 1-hour recording, batch processing may take several minutes.
+      // Timeout after 15 minutes to avoid infinite polling.
+      setBatchStatus("Processing transcript... this may take a few minutes for a long recording.");
+
+      const pollStartTime = Date.now();
+      const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
       batchPollRef.current = setInterval(async () => {
+        // Check for timeout
+        if (Date.now() - pollStartTime > POLL_TIMEOUT_MS) {
+          if (batchPollRef.current) {
+            clearInterval(batchPollRef.current);
+            batchPollRef.current = null;
+          }
+          setBatchStatus("Transcription timed out — please try again");
+          setBatchProcessing(false);
+          setRecState("idle");
+          setStatusKind("error");
+          setStatusText("Batch transcription timed out");
+          return;
+        }
         try {
           const statusResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/${jobId}`, {
             headers: { "Authorization": `Bearer ${batchJwt}` },
@@ -1819,7 +1898,7 @@ export default function Marqad() {
       setStatusText(`Batch error: ${err.message}`);
       setBatchStatus("");
     }
-  }, []);
+  }, [releaseWakeLock]);
 
   // ============================================================
   // History handlers

@@ -8,8 +8,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const SPEECHMATICS_KEY = Deno.env.get("SPEECHMATICS_API_KEY");
 const TOKEN_ENDPOINT = "https://mp.speechmatics.com/v1/api_keys?type=rt";
-const TTL_SECONDS = 60 * 60; // 1 hour — generous for a full class session;
-                              // regenerate per session rather than reusing.
+const TTL_SECONDS = 60 * 60 * 2; // 2 hours — allows for a full 1-hour class + overhead
 // Region must match the region the Speechmatics API key was created in.
 // The minted JWT is region-scoped, so an EU token will NOT authenticate
 // against the US realtime endpoint (and vice versa). Valid rt values:

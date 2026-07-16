@@ -10,7 +10,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const SPEECHMATICS_KEY = Deno.env.get("SPEECHMATICS_API_KEY");
 const TOKEN_ENDPOINT = "https://mp.speechmatics.com/v1/api_keys?type=batch";
-const TTL_SECONDS = 60 * 30; // 30 minutes — enough for upload + polling
+const TTL_SECONDS = 60 * 60 * 2; // 2 hours — enough for 1-hour recording + upload + processing + polling
 const REGION = "usa";
 const CLIENT_REF = "marqad-user";
 
