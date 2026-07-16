@@ -548,6 +548,7 @@ export default function Marqad() {
   const [reconcileLoading, setReconcileLoading] = useState(false);
   const [aiReasoningError, setAiReasoningError] = useState<string | null>(null);
   const [reconcileError, setReconcileError] = useState<string | null>(null);
+  const [showCompactRecorder, setShowCompactRecorder] = useState(false); // mini recording widget on return
 
   // --- Fix this popover (vocabulary correction) ---
   const [fixPopover, setFixPopover] = useState<{
@@ -597,6 +598,7 @@ export default function Marqad() {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeLockRef = useRef<any>(null); // Screen Wake Lock — keeps screen on during recording
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null); // Silent audio keep-alive for background recording
   const startBatchRecordingRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const stopBatchRecordingRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const acquireWakeLockRef = useRef<() => Promise<void>>(() => Promise.resolve());
@@ -1557,8 +1559,9 @@ export default function Marqad() {
     if (batchPollRef.current) { clearInterval(batchPollRef.current); batchPollRef.current = null; }
     // Cancel animation frame
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
-    // Release wake lock
+    // Release wake lock + stop media session
     releaseWakeLock();
+    stopMediaSession();
 
     // Close WebSocket
     if (wsRef.current) {
@@ -1972,6 +1975,109 @@ export default function Marqad() {
     }
   }, []);
 
+  // ============================================================
+  // Background recording support (Media Session API + silent audio)
+  // On Android, this keeps audio capture alive when the PWA goes to
+  // background and shows a "Recording" notification with a stop button.
+  // On iOS, background audio recording is not possible for PWAs —
+  // Apple suspends all JS and media when the app is backgrounded.
+  // ============================================================
+
+  const startMediaSession = useCallback(() => {
+    if (!("mediaSession" in navigator)) return;
+
+    navigator.mediaSession.metadata = new (window as any).MediaMetadata({
+      title: "Recording in progress",
+      artist: "Marqad",
+      album: "Live transcription",
+      artwork: [
+        { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
+        { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      ],
+    });
+
+    // Set the recording state so the OS shows it in the notification
+    try {
+      navigator.mediaSession.playbackState = "playing";
+    } catch {}
+
+    // Wire up the stop button in the notification
+    try {
+      navigator.mediaSession.setActionHandler("stop", () => {
+        // Trigger the same stop flow as the UI button
+        if (batchRecordingRef.current) {
+          stopBatchRecordingRef.current();
+        } else {
+          stopRecording();
+        }
+      });
+    } catch {}
+
+    // Silent audio keep-alive — plays inaudible audio to prevent Android
+    // from suspending the audio context when the PWA goes to background.
+    // This is a well-known trick used by media PWAs. The audio is a short
+    // loop of near-silence (0.001 amplitude) that's effectively inaudible
+    // but keeps the audio session active.
+    if (!silentAudioRef.current) {
+      // Generate a tiny silent WAV data URI (1 second of near-silence)
+      const sampleRate = 8000;
+      const numSamples = sampleRate; // 1 second
+      const buffer = new ArrayBuffer(44 + numSamples * 2);
+      const view = new DataView(buffer);
+      // WAV header
+      const writeStr = (offset: number, str: string) => {
+        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+      };
+      writeStr(0, "RIFF");
+      view.setUint32(4, 36 + numSamples * 2, true);
+      writeStr(8, "WAVE");
+      writeStr(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM
+      view.setUint16(22, 1, true); // mono
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeStr(36, "data");
+      view.setUint32(40, numSamples * 2, true);
+      // Near-silence samples (amplitude 1 out of 32767 — inaudible)
+      for (let i = 0; i < numSamples; i++) {
+        view.setInt16(44 + i * 2, 1, true);
+      }
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const dataUri = "data:audio/wav;base64," + btoa(binary);
+
+      const audio = new Audio(dataUri);
+      audio.loop = true;
+      audio.volume = 0.001; // effectively inaudible
+      silentAudioRef.current = audio;
+    }
+
+    silentAudioRef.current.play().catch(() => {
+      // Autoplay policy may block this until user interaction — non-fatal
+      // The recording itself continues regardless; this is just for keep-alive
+    });
+    console.log("[Marqad] Media Session started — background recording active on Android");
+  }, []);
+
+  const stopMediaSession = useCallback(() => {
+    if ("mediaSession" in navigator) {
+      try {
+        navigator.mediaSession.playbackState = "none";
+        // Clear action handlers
+        try { navigator.mediaSession.setActionHandler("stop", null); } catch {}
+      } catch {}
+    }
+    if (silentAudioRef.current) {
+      try { silentAudioRef.current.pause(); } catch {}
+      silentAudioRef.current = null;
+    }
+    console.log("[Marqad] Media Session stopped");
+  }, []);
+
   // Re-acquire wake lock when tab becomes visible again + resume AudioContext
   useEffect(() => {
     const handleVisibility = () => {
@@ -1983,6 +2089,12 @@ export default function Marqad() {
         // Resume AudioContext if it was suspended (browser suspends it in background)
         if (audioCtxRef.current && audioCtxRef.current.state === "suspended") {
           audioCtxRef.current.resume().catch(() => {});
+        }
+        // Show compact recording widget if we're still recording
+        if (recState === "recording" || batchRecording) {
+          setShowCompactRecorder(true);
+          // Auto-hide after 5 seconds — user is back and engaged with the full UI
+          setTimeout(() => setShowCompactRecorder(false), 5000);
         }
       }
     };
@@ -2023,9 +2135,12 @@ export default function Marqad() {
       setStatusKind("active");
       setElapsedSec(0);
       elapsedRef.current = 0;
+      acquireWakeLock();
+      startMediaSession();
       sessionStreamingSecRef.current = 0;
       sessionStartRef.current = Date.now();
       acquireWakeLock();
+      startMediaSession();
 
       // Start elapsed timer
       timerRef.current = setInterval(() => {
@@ -2091,8 +2206,9 @@ export default function Marqad() {
       mediaStreamRef.current = null;
     }
 
-    // Release wake lock — recording is done, screen can sleep now
+    // Release wake lock + stop media session — recording is done
     releaseWakeLock();
+    stopMediaSession();
 
     // Keep the audio blob available for download regardless of what happens next
     if (audioBlob) setAudioBlob(audioBlob);
@@ -3212,6 +3328,32 @@ export default function Marqad() {
         onView={handleViewHistory}
         onImport={handleImportHistory}
       />
+
+      {/* ===== Compact recording widget — shown when returning from background ===== */}
+      {showCompactRecorder && (recState === "recording" || batchRecording) && (
+        <div className="compact-recorder">
+          <div className="compact-recorder-pulse" />
+          <div className="compact-recorder-info">
+            <div className="compact-recorder-title">
+              {batchRecording ? "Recording (batch)" : "Recording"}
+            </div>
+            <div className="compact-recorder-time">{formatTimestamp(elapsedSec)}</div>
+          </div>
+          <button
+            className="compact-recorder-stop"
+            onClick={() => {
+              if (batchRecording) {
+                stopBatchRecordingRef.current();
+              } else {
+                stopRecording();
+              }
+              setShowCompactRecorder(false);
+            }}
+          >
+            Stop
+          </button>
+        </div>
+      )}
     </div>
   );
 }

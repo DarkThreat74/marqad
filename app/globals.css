@@ -1674,3 +1674,100 @@ html, body {
   color: var(--amber);
   background: rgba(245, 166, 35, 0.08);
 }
+
+/* ============================================================
+   Compact recording widget — shown when returning from background
+   ============================================================ */
+
+.compact-recorder {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--ink-elevated);
+  border: 1px solid var(--ink-border-light);
+  border-radius: 12px;
+  padding: 10px 16px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  animation: compact-recorder-slide-up 0.3s ease;
+}
+
+@keyframes compact-recorder-slide-up {
+  from { transform: translateX(-50%) translateY(100%); opacity: 0; }
+  to { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+
+.compact-recorder-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e85d3a;
+  animation: compact-recorder-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes compact-recorder-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.compact-recorder-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.compact-recorder-title {
+  font-family: var(--font-chrome);
+  font-size: 12px;
+  color: var(--paper);
+  font-weight: 500;
+}
+
+.compact-recorder-time {
+  font-family: var(--font-jetbrains);
+  font-size: 11px;
+  color: var(--paper-muted);
+}
+
+.compact-recorder-stop {
+  font-family: var(--font-chrome);
+  font-size: 12px;
+  color: #fff;
+  background: #e85d3a;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.compact-recorder-stop:hover {
+  background: #d14e2e;
+}
+
+@media (max-width: 768px) {
+  .compact-recorder {
+    bottom: 10px;
+    padding: 8px 12px;
+    gap: 8px;
+  }
+
+  .compact-recorder-title {
+    font-size: 11px;
+  }
+
+  .compact-recorder-time {
+    font-size: 10px;
+  }
+
+  .compact-recorder-stop {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+}

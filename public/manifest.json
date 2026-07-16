@@ -4,7 +4,8 @@
   "description": "Live classroom transcription for Arabic/English code-switched speech",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#111310",
+  "display_override": ["standalone", "minimal-ui"],
+  "background_color": "#F2EFE8",
   "theme_color": "#111310",
   "orientation": "portrait",
   "icons": [
