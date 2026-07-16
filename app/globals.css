@@ -554,6 +554,7 @@ html, body {
   /* Use background gradient directly instead of ::before
      so it always covers the full height of content */
   background-image: linear-gradient(180deg, var(--paper) 0%, var(--paper-warm) 100%);
+  text-align: left;
 }
 
 /* --- Interim / partial ghost text --- */
@@ -1436,6 +1437,27 @@ html, body {
   font-weight: 500;
 }
 
+/* Read-only viewing mode — styled like the live transcript */
+.viewing-text {
+  font-family: var(--font-body);
+  font-size: 18px;
+  line-height: 1.75;
+  color: var(--paper-text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.viewing-line {
+  margin-bottom: 0.3em;
+}
+
+.viewing-line-meta {
+  font-family: var(--font-chrome);
+  font-size: 12px;
+  color: var(--paper-muted);
+  margin-right: 4px;
+}
+
 .edit-transcript {
   width: 100%;
   min-height: 60vh;
@@ -1443,11 +1465,14 @@ html, body {
   outline: none;
   resize: vertical;
   background: transparent;
-  font-family: var(--font-fraunces), Georgia, serif;
-  font-size: 17px;
-  line-height: 1.8;
+  font-family: var(--font-body), var(--font-arabic), Georgia, serif;
+  font-size: 18px;
+  line-height: 1.75;
   color: var(--ink);
   padding: 0;
+  text-align: left;
+  /* Match the live transcript's paper-text color for consistency */
+  color: var(--paper-text);
 }
 
 .edit-transcript:focus {

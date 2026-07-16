@@ -437,6 +437,7 @@ export default function Marqad() {
   const [editText, setEditText] = useState("");
   const [editDirty, setEditDirty] = useState(false);
   const [editSaved, setEditSaved] = useState(false);
+  const [viewingEditMode, setViewingEditMode] = useState(false); // edit past session
   const [liveEditMode, setLiveEditMode] = useState(false); // edit live transcript
   const [liveEditText, setLiveEditText] = useState("");
   const [isOnline, setIsOnline] = useState(true);
@@ -2105,6 +2106,7 @@ export default function Marqad() {
     setEditText(record.exportText);
     setEditDirty(false);
     setEditSaved(false);
+    setViewingEditMode(false);
     setHistoryOpen(false);
     setPartial("");
   }, []);
@@ -2128,6 +2130,7 @@ export default function Marqad() {
     setAudioSaved(false);
     setMp3Downloaded(false);
     setBatchError(null);
+    setViewingEditMode(false);
   }, [recState, stopRecording]);
 
   // Save edited transcript as a new history entry
@@ -2299,13 +2302,34 @@ export default function Marqad() {
 
           {viewingRecord ? (
             <>
-              <button
-                className={`copy-btn ${editSaved ? "copied" : ""}`}
-                onClick={handleSaveEdit}
-                disabled={!editDirty}
-              >
-                {editSaved ? "✓ Saved" : "Save"}
-              </button>
+              {viewingEditMode ? (
+                <>
+                  <button
+                    className={`copy-btn ${editSaved ? "copied" : ""}`}
+                    onClick={handleSaveEdit}
+                    disabled={!editDirty}
+                  >
+                    {editSaved ? "✓ Saved" : "Save"}
+                  </button>
+                  <button
+                    className="new-session-btn"
+                    onClick={() => setViewingEditMode(false)}
+                    title="Exit edit mode"
+                  >
+                    Done
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="edit-toggle-btn"
+                    onClick={() => setViewingEditMode(true)}
+                    title="Edit transcript"
+                  >
+                    Edit
+                  </button>
+                </>
+              )}
               <button
                 className="history-text-btn"
                 onClick={() => setHistoryOpen(true)}
@@ -2520,7 +2544,7 @@ export default function Marqad() {
               )}
             </div>
           ) : viewingRecord ? (
-            /* ===== Viewing mode: editable past session ===== */
+            /* ===== Viewing mode: past session ===== */
             <div className="viewing-mode">
               <div className="viewing-meta">
                 {new Date(viewingRecord.date).toLocaleString()} ·{" "}
@@ -2528,15 +2552,37 @@ export default function Marqad() {
                 {viewingRecord.segmentCount} segments
                 {editDirty && <span className="edit-dirty"> · unsaved</span>}
               </div>
-              <textarea
-                className="edit-transcript"
-                value={editText}
-                onChange={(e) => {
-                  setEditText(e.target.value);
-                  setEditDirty(true);
-                }}
-                spellCheck={false}
-              />
+              {viewingEditMode ? (
+                <textarea
+                  className="edit-transcript"
+                  value={editText}
+                  onChange={(e) => {
+                    setEditText(e.target.value);
+                    setEditDirty(true);
+                  }}
+                  spellCheck={false}
+                  autoFocus
+                />
+              ) : (
+                <div className="viewing-text">
+                  {editText.split("\n").map((line, i) => (
+                    <div key={i} className="viewing-line">
+                      {line.includes(": ") && line.startsWith("[") ? (
+                        <>
+                          <span className="viewing-line-meta">
+                            {line.slice(0, line.indexOf(": ") + 2)}
+                          </span>
+                          <span dir={isArabicText(line.slice(line.indexOf(": ") + 2)) ? "rtl" : "ltr"}>
+                            {line.slice(line.indexOf(": ") + 2)}
+                          </span>
+                        </>
+                      ) : (
+                        <span dir={isArabicText(line) ? "rtl" : "ltr"}>{line}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : liveEditMode ? (
             /* ===== Live edit mode: edit current transcript on the page ===== */
