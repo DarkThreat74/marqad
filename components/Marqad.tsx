@@ -724,17 +724,17 @@ export default function Marqad() {
             // A new segment is only created when the speaker changes.
             const last = prev[prev.length - 1];
             if (last && last.speaker === seg.speaker) {
-              const merged: Segment = {
-                ...last,
-                // Words array now includes pause markers, so pauses survive merges
-                words: [...last.words, ...seg.words],
-                transcript: last.transcript + seg.transcript,
-                audioEnd: seg.audioEnd,
-                // Keep the segment's own spacing (for the first word's spacing).
-                // Internal pauses are handled by pause markers in the words array.
-                spacing: last.spacing,
-              };
-              const next = [...prev.slice(0, -1), merged];
+              // Mutate the words array in place to avoid O(n) copy on every message.
+              // Over a 1-hour session, a single segment can accumulate thousands of
+              // words — copying the entire array on each of thousands of messages
+              // would cause severe jank after ~30 minutes.
+              last.words.push(...seg.words);
+              last.transcript = last.transcript + seg.transcript;
+              last.audioEnd = seg.audioEnd;
+              // Create a new segment object reference so memo'd SegmentView
+              // re-renders, but don't copy the words array (it was mutated in place)
+              const mergedSeg = { ...last };
+              const next = [...prev.slice(0, -1), mergedSeg];
               segmentsRef.current = next;
               return next;
             }
@@ -1179,7 +1179,8 @@ export default function Marqad() {
       zeroGain.connect(audioCtx.destination);
 
       worklet.port.onmessage = (e: MessageEvent) => {
-        const float32: Float32Array = e.data;
+        // Worklet transfers an ArrayBuffer — wrap it in a Float32Array view
+        const float32 = new Float32Array(e.data);
 
         // Update waveform
         let sum = 0;
@@ -1661,17 +1662,21 @@ export default function Marqad() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
+          sampleRate: 48000, // 48kHz capture for batch — higher quality than live's 16kHz
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         },
       });
       mediaStreamRef.current = stream;
 
       // Use MediaRecorder for local audio capture (compressed webm/opus)
+      // 128kbps is high quality for speech — clear enough for batch transcription
       const recorder = new MediaRecorder(stream, {
         mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
           ? "audio/webm;codecs=opus"
           : "audio/webm",
+        audioBitsPerSecond: 128000,
       });
       batchChunksRef.current = [];
       recorder.ondataavailable = (e) => {
