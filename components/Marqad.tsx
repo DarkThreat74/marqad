@@ -583,14 +583,25 @@ export default function Marqad() {
     return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
 
-  // Register service worker — force update on every load
+  // Register service worker — check for updates on every load
   useEffect(() => {
     if ("serviceWorker" in navigator) {
       const handleControllerChange = () => {
+        // New SW took control — reload to get fresh assets
         window.location.reload();
       };
       navigator.serviceWorker.register("/sw.js").then((reg) => {
+        // Check for SW update immediately
         reg.update();
+        // Also check when the page becomes visible (e.g. returning to the tab)
+        const handleVisibility = () => {
+          if (document.visibilityState === "visible") {
+            reg.update();
+          }
+        };
+        document.addEventListener("visibilitychange", handleVisibility);
+        // Store cleanup on the reg object
+        (reg as any)._cleanup = () => document.removeEventListener("visibilitychange", handleVisibility);
       }).catch(() => {});
       navigator.serviceWorker.addEventListener("controllerchange", handleControllerChange);
       return () => {

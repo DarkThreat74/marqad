@@ -7,6 +7,8 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // Service worker must never be cached — browser needs to see the
+        // latest version to trigger an update
         source: "/sw.js",
         headers: [
           { key: "Content-Type", value: "application/javascript; charset=utf-8" },
@@ -18,6 +20,16 @@ const nextConfig = {
         source: "/audio-worklet-processor.js",
         headers: [
           { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+        ],
+      },
+      {
+        // Next.js chunks have hashed filenames so they're safe to cache.
+        // But the HTML page that references them must not be cached,
+        // otherwise the browser loads old HTML pointing to old chunks.
+        source: "/((?!_next/static/).*)",
+        headers: [
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
         ],
       },
     ];
