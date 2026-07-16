@@ -435,9 +435,13 @@ export function buildBatchConfig(
     }
   }
 
-  // --- Melia 1: minimal config — no additional_vocab, no transcript_filtering,
-  //     no enable_entities (all unsupported as of 2026-07-16). Uses language:
-  //     "multi" (rejects "auto" and single-language-pack values like "ar_en").
+  // --- Melia 1: minimal config per live docs (2026-07-16).
+  //     Only model, language, diarization, and language_hints are supported.
+  //     NO additional_vocab, transcript_filtering_config, enable_entities,
+  //     punctuation_overrides, speaker_diarization_config, or confidence scores.
+  //     Including unsupported fields causes HTTP 400 "error validating v3 job config".
+  //     Source: https://docs.speechmatics.com/speech-to-text/batch/input.md
+  //     and https://github.com/speechmatics/speechmatics-academy/tree/main/basics/12-melia-multilingual
   if (model === "melia-1") {
     return JSON.stringify({
       type: "transcription",
@@ -445,16 +449,10 @@ export function buildBatchConfig(
         language: "multi",
         model: "melia-1",
         diarization: "speaker",
-        speaker_diarization_config: {
-          prefer_current_speaker: true,
-        },
-        // Omitting permitted_marks defaults to all punctuation marks.
-        punctuation_overrides: {
-          sensitivity: 0.6,
-        },
-        // additional_vocab, transcript_filtering_config, enable_entities,
-        // and confidence scores are NOT supported on Melia 1 yet.
-        // Do not include them — the API will reject the job if they're set.
+        // Language hints bias detection toward expected languages.
+        // The model can still detect other languages — hints are optional
+        // but improve reliability for short clips and heavy accents.
+        language_hints: ["en", "ar"],
       },
     });
   }

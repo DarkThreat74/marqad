@@ -1,0 +1,18 @@
+Fix Melia-1 batch config rejection (HTTP 400)
+
+The Melia-1 config included fields that aren't supported by the model
+(speaker_diarization_config, punctuation_overrides), causing the API to
+reject the job with "error validating v3 job config".
+
+Stripped to the minimal config confirmed by live docs:
+- model: "melia-1"
+- language: "multi"
+- diarization: "speaker"
+- language_hints: ["en", "ar"] (improves detection for Arabic/English)
+
+Removed: speaker_diarization_config, punctuation_overrides
+(both unsupported on Melia-1 and trigger validation errors)
+
+Generated with [Devin](https://devin.ai)
+
+Co-Authored-By: Devin <158243242+devin-ai-integration[bot]@users.noreply.github.com>
