@@ -34,11 +34,12 @@ async function decodeAudio(blob: Blob): Promise<{ samples: Float32Array; sampleR
  * Convert Float32 samples to 16-bit PCM and encode as a WAV file.
  * This is the optimal format for Speechmatics Batch API (16-bit PCM).
  */
-function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+function encodeWav(samples: Float32Array, sampleRate: number, gain: number = 1.0): Blob {
   // Convert Float32 [-1, 1] to Int16 [-32768, 32767]
+  // Apply gain boost before clamping — helps quiet/whispered audio
   const int16 = new Int16Array(samples.length);
   for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
+    const s = Math.max(-1, Math.min(1, samples[i] * gain));
     int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
 
@@ -90,9 +91,9 @@ function encodeWav(samples: Float32Array, sampleRate: number): Blob {
  * webm format — only wav, mp3, aac, ogg, mpeg, amr, m4a, mp4, flac.
  * WAV is the optimal format (no transcoding needed server-side).
  */
-export async function webmToWav(webmBlob: Blob): Promise<Blob> {
+export async function webmToWav(webmBlob: Blob, gain: number = 1.0): Promise<Blob> {
   const { samples, sampleRate } = await decodeAudio(webmBlob);
-  return encodeWav(samples, sampleRate);
+  return encodeWav(samples, sampleRate, gain);
 }
 
 /**

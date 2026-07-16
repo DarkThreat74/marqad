@@ -479,6 +479,7 @@ export default function Marqad() {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const zeroGainRef = useRef<GainNode | null>(null);
+  const inputGainRef = useRef<GainNode | null>(null); // boosts quiet/whispered audio before sending to Speechmatics
   // Simultaneous local recording (both live and batch modes)
   const localRecorderRef = useRef<MediaRecorder | null>(null);
   const localChunksRef = useRef<Blob[]>([]);
@@ -1275,6 +1276,14 @@ export default function Marqad() {
       const source = audioCtx.createMediaStreamSource(stream);
       sourceNodeRef.current = source;
 
+      // Input gain — boosts quiet/whispered/distant audio before it reaches
+      // the worklet (which sends it to Speechmatics). This is separate from
+      // the browser's autoGainControl, which is conservative. A 4x boost
+      // (~12dB) makes whispered speech loud enough for the model to transcribe.
+      const inputGain = audioCtx.createGain();
+      inputGain.gain.value = CONFIG.INPUT_GAIN;
+      inputGainRef.current = inputGain;
+
       const worklet = new AudioWorkletNode(audioCtx, "pcm-processor");
       workletNodeRef.current = worklet;
 
@@ -1282,7 +1291,11 @@ export default function Marqad() {
       zeroGain.gain.value = 0;
       zeroGainRef.current = zeroGain;
 
-      source.connect(worklet);
+      // Audio graph: source → inputGain → worklet → zeroGain → destination
+      // The gain boost only affects what goes to Speechmatics (via worklet),
+      // not the local recording (which captures from the raw stream).
+      source.connect(inputGain);
+      inputGain.connect(worklet);
       worklet.connect(zeroGain);
       zeroGain.connect(audioCtx.destination);
 
@@ -1380,17 +1393,19 @@ export default function Marqad() {
     if (recStateRef.current !== "paused") return;
     isPausedRef.current = false;
 
-    // Reconnect source node to resume audio capture
+    // Reconnect source node to resume audio capture (source → inputGain → worklet)
     if (sourceNodeRef.current && workletNodeRef.current && audioCtxRef.current) {
       try {
-        sourceNodeRef.current.connect(workletNodeRef.current);
+        sourceNodeRef.current.connect(inputGainRef.current || workletNodeRef.current);
+        if (inputGainRef.current) inputGainRef.current.connect(workletNodeRef.current);
       } catch {
         // If reconnect fails, try recreating the source from the existing stream
         if (mediaStreamRef.current && audioCtxRef.current) {
           try {
             const newSource = audioCtxRef.current.createMediaStreamSource(mediaStreamRef.current);
             sourceNodeRef.current = newSource;
-            newSource.connect(workletNodeRef.current!);
+            newSource.connect(inputGainRef.current || workletNodeRef.current!);
+            if (inputGainRef.current) inputGainRef.current.connect(workletNodeRef.current!);
           } catch {}
         }
       }
@@ -1447,6 +1462,10 @@ export default function Marqad() {
     if (sourceNodeRef.current) {
       try { sourceNodeRef.current.disconnect(); } catch {}
       sourceNodeRef.current = null;
+    }
+    if (inputGainRef.current) {
+      try { inputGainRef.current.disconnect(); } catch {}
+      inputGainRef.current = null;
     }
     if (workletNodeRef.current) {
       try { workletNodeRef.current.port.close(); } catch {}
@@ -1980,7 +1999,7 @@ export default function Marqad() {
       // Step 3: Convert webm to WAV — the Batch API does NOT support webm.
       setBatchStatus("Converting audio to WAV...");
       console.log("[Marqad] Batch: converting webm to WAV, input size:", audioBlob.size);
-      const wavBlob = await webmToWav(audioBlob);
+      const wavBlob = await webmToWav(audioBlob, CONFIG.INPUT_GAIN);
       console.log("[Marqad] Batch: WAV converted, size:", wavBlob.size);
 
       // Step 4: Create batch job — upload WAV to Speechmatics

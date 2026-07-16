@@ -29,6 +29,12 @@ export const CONFIG = {
                   // enough lookahead for smart formatting and punctuation without
                   // excessive delay when switching between Arabic and English
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
+  // Input gain boost — multiplies the microphone signal before sending to
+  // Speechmatics. Helps capture whispered/softly-spoken/distant speakers.
+  // 1.0 = no boost, 4.0 = ~12dB boost (good for quiet environments).
+  // The browser's autoGainControl handles mild normalization; this provides
+  // an additional fixed boost on top for very quiet sources.
+  INPUT_GAIN: 4.0,
 };
 
 // ===== Vocabulary cache (Section 1.2 — localStorage caching) =====
