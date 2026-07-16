@@ -598,11 +598,14 @@ export default function Marqad() {
     }
   }, []);
 
-  // Auto-scroll
+  // Auto-scroll — keep pinned to bottom when new content arrives
   useEffect(() => {
     const el = pageScrollRef.current;
     if (el && isAtBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+      // Use requestAnimationFrame to ensure DOM is updated before scrolling
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
     }
   }, [segments, partial]);
 
@@ -1084,6 +1087,7 @@ export default function Marqad() {
     elapsedRef.current = 0;
     sessionStreamingSecRef.current = 0;
     sessionStartRef.current = Date.now();
+    isAtBottomRef.current = true; // reset auto-scroll on new session
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -1838,7 +1842,8 @@ export default function Marqad() {
   const handleScroll = useCallback(() => {
     const el = pageScrollRef.current;
     if (!el) return;
-    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    // More generous threshold — if within 120px of bottom, treat as "at bottom"
+    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
 
   // ============================================================
