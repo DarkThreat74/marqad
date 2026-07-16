@@ -1,8 +1,99 @@
-// Audio utilities: webm → mp3 conversion and IndexedDB storage
+// Audio utilities: webm → wav/mp3 conversion and IndexedDB storage
 // Allows users to download recordings as MP3 and optionally save them
 // alongside transcripts for later reference.
 
 import { Mp3Encoder } from "@breezystack/lamejs";
+
+/**
+ * Decode any audio blob (webm, mp3, wav, etc.) to PCM samples using AudioContext.
+ * Returns Float32Array of mono samples and the sample rate.
+ */
+async function decodeAudio(blob: Blob): Promise<{ samples: Float32Array; sampleRate: number }> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const audioContext = new AudioContext();
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+  await audioContext.close();
+
+  // Mix down to mono if needed
+  let samples: Float32Array;
+  if (audioBuffer.numberOfChannels > 1) {
+    const channel1 = audioBuffer.getChannelData(0);
+    const channel2 = audioBuffer.getChannelData(1);
+    samples = new Float32Array(channel1.length);
+    for (let i = 0; i < channel1.length; i++) {
+      samples[i] = (channel1[i] + channel2[i]) / 2;
+    }
+  } else {
+    samples = audioBuffer.getChannelData(0);
+  }
+
+  return { samples, sampleRate: audioBuffer.sampleRate };
+}
+
+/**
+ * Convert Float32 samples to 16-bit PCM and encode as a WAV file.
+ * This is the optimal format for Speechmatics Batch API (16-bit PCM).
+ */
+function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+  // Convert Float32 [-1, 1] to Int16 [-32768, 32767]
+  const int16 = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+
+  // Build WAV header
+  const buffer = new ArrayBuffer(44 + int16.length * 2);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  view.setUint8(0, "R".charCodeAt(0));
+  view.setUint8(1, "I".charCodeAt(0));
+  view.setUint8(2, "F".charCodeAt(0));
+  view.setUint8(3, "F".charCodeAt(0));
+  view.setUint32(4, 36 + int16.length * 2, true);
+  view.setUint8(8, "W".charCodeAt(0));
+  view.setUint8(9, "A".charCodeAt(0));
+  view.setUint8(10, "V".charCodeAt(0));
+  view.setUint8(11, "E".charCodeAt(0));
+
+  // fmt chunk
+  view.setUint8(12, "f".charCodeAt(0));
+  view.setUint8(13, "m".charCodeAt(0));
+  view.setUint8(14, "t".charCodeAt(0));
+  view.setUint8(15, " ".charCodeAt(0));
+  view.setUint32(16, 16, true); // chunk size
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+
+  // data chunk
+  view.setUint8(36, "d".charCodeAt(0));
+  view.setUint8(37, "a".charCodeAt(0));
+  view.setUint8(38, "t".charCodeAt(0));
+  view.setUint8(39, "a".charCodeAt(0));
+  view.setUint32(40, int16.length * 2, true);
+
+  // Write PCM data
+  const pcmView = new Int16Array(buffer, 44, int16.length);
+  pcmView.set(int16);
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
+/**
+ * Convert a webm/opus audio blob to WAV (16-bit PCM).
+ * This is required because the Speechmatics Batch API does NOT support
+ * webm format — only wav, mp3, aac, ogg, mpeg, amr, m4a, mp4, flac.
+ * WAV is the optimal format (no transcoding needed server-side).
+ */
+export async function webmToWav(webmBlob: Blob): Promise<Blob> {
+  const { samples, sampleRate } = await decodeAudio(webmBlob);
+  return encodeWav(samples, sampleRate);
+}
 
 /**
  * Convert a webm/opus audio blob to MP3.
@@ -10,15 +101,8 @@ import { Mp3Encoder } from "@breezystack/lamejs";
  * Returns a Blob with type audio/mpeg.
  */
 export async function webmToMp3(webmBlob: Blob): Promise<Blob> {
-  // Decode webm to PCM
-  const arrayBuffer = await webmBlob.arrayBuffer();
-  const audioContext = new AudioContext();
-  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-  await audioContext.close();
-
-  // Get PCM data from the first channel (mono)
-  const samples = audioBuffer.getChannelData(0);
-  const sampleRate = audioBuffer.sampleRate;
+  // Decode webm to PCM (reuse shared decoder)
+  const { samples, sampleRate } = await decodeAudio(webmBlob);
 
   // Convert Float32 [-1, 1] to Int16 [-32768, 32767]
   const int16Samples = new Int16Array(samples.length);

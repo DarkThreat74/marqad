@@ -33,7 +33,7 @@ import {
   exportHistoryJSON,
   importHistoryJSON,
 } from "@/lib/marqad";
-import { webmToMp3, downloadBlob, saveAudioToDB } from "@/lib/audio";
+import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB } from "@/lib/audio";
 
 // ============================================================
 // Memoized segment view
@@ -481,6 +481,7 @@ export default function Marqad() {
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [convertingMp3, setConvertingMp3] = useState(false);
   const [audioSaved, setAudioSaved] = useState(false);
+  const [mp3Downloaded, setMp3Downloaded] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef(0);
   const recognitionStartedRef = useRef(false);
@@ -1227,6 +1228,7 @@ export default function Marqad() {
       startLocalRecording(stream);
       setAudioBlob(null);
       setAudioSaved(false);
+      setMp3Downloaded(false);
 
       const audioCtx = new AudioContext({ sampleRate: CONFIG.SAMPLE_RATE });
       audioCtxRef.current = audioCtx;
@@ -1759,6 +1761,7 @@ export default function Marqad() {
       // both the batch audio source AND the downloadable backup.
       setAudioBlob(null);
       setAudioSaved(false);
+      setMp3Downloaded(false);
       setBatchError(null);
       startLocalRecording(stream);
 
@@ -1870,9 +1873,17 @@ export default function Marqad() {
       const batchConfigJson = buildBatchConfig(extraVocab);
       console.log("[Marqad] Batch: config built");
 
-      // Step 3: Create batch job — upload audio directly to Speechmatics
+      // Step 3: Convert webm to WAV — the Batch API does NOT support webm.
+      // Supported formats: wav, mp3, aac, ogg, mpeg, amr, m4a, mp4, flac.
+      // WAV (16-bit PCM) is the optimal format — no transcoding needed server-side.
+      setBatchStatus("Converting audio to WAV for Speechmatics...");
+      console.log("[Marqad] Batch: converting webm to WAV, input size:", audioBlob.size);
+      const wavBlob = await webmToWav(audioBlob);
+      console.log("[Marqad] Batch: WAV converted, size:", wavBlob.size);
+
+      // Step 4: Create batch job — upload WAV to Speechmatics
       const formData = new FormData();
-      formData.append("data_file", audioBlob, "recording.webm");
+      formData.append("data_file", wavBlob, "recording.wav");
       formData.append("config", batchConfigJson);
 
       setBatchStatus("Submitting to Speechmatics Batch API...");
@@ -2028,15 +2039,20 @@ export default function Marqad() {
   const handleDownloadMp3 = useCallback(async () => {
     if (!audioBlob) return;
     setConvertingMp3(true);
+    setMp3Downloaded(false);
     try {
       const mp3Blob = await webmToMp3(audioBlob);
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       downloadBlob(mp3Blob, `marqad-${timestamp}.mp3`);
+      setMp3Downloaded(true);
+      setTimeout(() => setMp3Downloaded(false), 3000);
     } catch (err) {
       console.error("[Marqad] MP3 conversion failed:", err);
       // Fallback: download the webm directly
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       downloadBlob(audioBlob, `marqad-${timestamp}.webm`);
+      setMp3Downloaded(true);
+      setTimeout(() => setMp3Downloaded(false), 3000);
     }
     setConvertingMp3(false);
   }, [audioBlob]);
@@ -2110,6 +2126,7 @@ export default function Marqad() {
     setStatusKind("idle");
     setAudioBlob(null);
     setAudioSaved(false);
+    setMp3Downloaded(false);
     setBatchError(null);
   }, [recState, stopRecording]);
 
@@ -2313,7 +2330,7 @@ export default function Marqad() {
                     disabled={convertingMp3}
                     title="Download recording as MP3"
                   >
-                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                    {convertingMp3 ? "Converting…" : mp3Downloaded ? "✓ Downloaded" : "Download MP3"}
                   </button>
                   <button
                     className={`copy-btn ${audioSaved ? "copied" : ""}`}
@@ -2405,7 +2422,7 @@ export default function Marqad() {
                     disabled={convertingMp3}
                     title="Download recording as MP3"
                   >
-                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                    {convertingMp3 ? "Converting…" : mp3Downloaded ? "✓ Downloaded" : "Download MP3"}
                   </button>
                   <button
                     className={`copy-btn ${audioSaved ? "copied" : ""}`}
@@ -2463,7 +2480,7 @@ export default function Marqad() {
               {audioBlob && (
                 <div className="batch-error-actions">
                   <button className="copy-btn" onClick={handleDownloadMp3} disabled={convertingMp3}>
-                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                    {convertingMp3 ? "Converting…" : mp3Downloaded ? "✓ Downloaded" : "Download MP3"}
                   </button>
                   <button className="new-session-btn" onClick={handleNewSession}>
                     + New Session
