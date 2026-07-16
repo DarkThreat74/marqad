@@ -14,6 +14,7 @@ import {
   formatTimestamp,
   float32ToInt16,
   buildStartRecognition,
+  buildBatchConfig,
   buildExportText,
   isArabicText,
   isArabicWord,
@@ -1782,22 +1783,17 @@ export default function Marqad() {
       if (!batchJwt) throw new Error("No batch JWT in response");
       console.log("[Marqad] Batch: token acquired");
 
-      // Step 2: Build config (reuse the same config as live mode)
+      // Step 2: Build batch config — different from realtime config
+      // (no enable_partials, no max_delay, no conversation_config)
       const cache = loadVocabCache();
       const extraVocab = cache?.vocab;
-      const config = buildStartRecognition(extraVocab);
-      // Extract just the transcription_config from the StartRecognition message
-      const parsed = JSON.parse(config);
-      const batchConfig = {
-        type: "transcription",
-        transcription_config: parsed.transcription_config,
-      };
-      console.log("[Marqad] Batch: config built, language:", parsed.transcription_config.language);
+      const batchConfigJson = buildBatchConfig(extraVocab);
+      console.log("[Marqad] Batch: config built");
 
       // Step 3: Create batch job — upload audio directly to Speechmatics
       const formData = new FormData();
       formData.append("data_file", audioBlob, "recording.webm");
-      formData.append("config", JSON.stringify(batchConfig));
+      formData.append("config", batchConfigJson);
 
       setBatchStatus("Submitting to Speechmatics Batch API...");
       console.log("[Marqad] Batch: submitting job to", `${CONFIG.BATCH_API_HOST}/jobs/`);

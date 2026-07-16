@@ -311,6 +311,114 @@ export function float32ToInt16(float32: Float32Array): ArrayBuffer {
   return int16.buffer;
 }
 
+// ===== Batch transcription config =====
+// The Batch API has a different config format than the Realtime API.
+// Notably: no enable_partials, no max_delay, no conversation_config,
+// no max_delay_mode. But it does support enable_entities, diarization,
+// additional_vocab, punctuation_overrides, and transcript_filtering_config.
+export function buildBatchConfig(extraVocab?: Array<{ content: string; sounds_like: string[] }>): string {
+  // Reuse the same vocab merging logic as buildStartRecognition
+  const baselineVocab = [
+    { content: "Mishkat", sounds_like: ["mish-kaat", "mishkat", "mishkaat"] },
+    { content: "Sharh al Wiqayah", sounds_like: ["sharh al wiqaya", "sharhul wiqaya", "wiqayah"] },
+    { content: "Hidayah", sounds_like: ["hidaya", "hidayah", "hidaaya"] },
+    { content: "Nur al Anwar", sounds_like: ["noor ul anwar", "nurul anwar"] },
+    { content: "Qiraat", sounds_like: ["qira'at", "qiraat", "keeraat"] },
+    { content: "Iqtisad", sounds_like: ["iqtisaad", "iqtisad"] },
+    { content: "Jalalayn", sounds_like: ["jalalayn", "jalalain", "the jalalayn"] },
+    { content: "Hadith", sounds_like: ["hadeeth", "hadith"] },
+    { content: "Nahw", sounds_like: ["nahw", "nahu"] },
+    { content: "Balagha", sounds_like: ["balagha", "balaghah"] },
+    { content: "Tafsir", sounds_like: ["tafseer", "tafsir"] },
+    { content: "Mantiq", sounds_like: ["mantiq", "mantik"] },
+    { content: "Usul al-Fiqh", sounds_like: ["usul al fiqh", "usulul fiqh"] },
+    { content: "Hanafi", sounds_like: ["hanafi", "hanafee"] },
+    { content: "A'mari", sounds_like: ["ahmari", "amari", "amary", "ahmadi", "amadi"] },
+    { content: "Amari", sounds_like: ["amari", "amary", "ahmari"] },
+    { content: "Bukhari", sounds_like: ["bukhari", "bukhary", "bohari"] },
+    { content: "Muslim", sounds_like: ["moslem", "muslem"] },
+    { content: "Tirmidhi", sounds_like: ["tirmidhi", "termidhi", "tirmizi"] },
+    { content: "Abu Dawud", sounds_like: ["abu dawood", "abu daud"] },
+    { content: "An-Nawawi", sounds_like: ["nawawi", "nawawy", "an nawawi"] },
+    { content: "Ibn Majah", sounds_like: ["ibn majah", "ibn maja"] },
+    { content: "Ibn Kathir", sounds_like: ["ibn kathir", "ibn kaseer"] },
+    { content: "Ibn Hajar", sounds_like: ["ibn hajar", "ibn hajr"] },
+    { content: "As-Suyuti", sounds_like: ["suyuti", "suyuty", "as suyuti"] },
+    { content: "Al-Ghazali", sounds_like: ["ghazali", "ghazaly", "al ghazali"] },
+    { content: "An-Nasa'i", sounds_like: ["nasai", "nasay", "an nasai"] },
+    { content: "Ibn Taymiyyah", sounds_like: ["ibn taymiyyah", "ibn taymiyah"] },
+    { content: "Shafi'i", sounds_like: ["shafii", "shafei", "shafiy"] },
+    { content: "Maliki", sounds_like: ["maliki", "maleki", "maliky"] },
+    { content: "Hanbali", sounds_like: ["hanbali", "hanbaly"] },
+    { content: "Insha'Allah", sounds_like: ["inshallah", "insha allah"] },
+    { content: "Masha'Allah", sounds_like: ["mashallah", "masha allah"] },
+    { content: "Subhan'Allah", sounds_like: ["subhanallah", "subhan allah"] },
+    { content: "Astaghfirullah", sounds_like: ["astaghfirullah", "astaghferullah"] },
+    { content: "Jazak'Allah", sounds_like: ["jazakallah", "jazak allah"] },
+    { content: "Sallallahu alayhi wa sallam", sounds_like: ["sallallahu alayhi wa sallam"] },
+    { content: "Rasulullah", sounds_like: ["rasulullah", "rasoolullah"] },
+    { content: "Subhanahu wa Ta'ala", sounds_like: ["subhanahu wa taala"] },
+    { content: "Ayah", sounds_like: ["aya", "ayah", "ayat"] },
+    { content: "Surah", sounds_like: ["sura", "surah", "surat"] },
+    { content: "Sunnah", sounds_like: ["sunnah", "sunna", "sunnat"] },
+    { content: "Fiqh", sounds_like: ["fiqh", "feqh"] },
+    { content: "Usul", sounds_like: ["usul", "usool"] },
+    { content: "Ijtihad", sounds_like: ["ijtihad", "ijtehad"] },
+    { content: "Qiyas", sounds_like: ["qiyas", "qiyass"] },
+    { content: "Ijma", sounds_like: ["ijma", "ijmaa"] },
+    { content: "Bismillah", sounds_like: ["bismillah", "bismi allah"] },
+    { content: "Alhamdulillah", sounds_like: ["alhamdulillah", "alhamdo lillah"] },
+    { content: "Taqwa", sounds_like: ["taqwa", "taqoua"] },
+    { content: "Tawheed", sounds_like: ["tawheed", "tawhid"] },
+    { content: "Shirk", sounds_like: ["shirk", "sherik"] },
+    { content: "Bid'ah", sounds_like: ["bidah", "bida"] },
+    { content: "Halal", sounds_like: ["halal", "halal"] },
+    { content: "Haram", sounds_like: ["haram", "haraam"] },
+  ];
+
+  const mergedVocab = [...baselineVocab];
+  if (extraVocab && extraVocab.length > 0) {
+    for (const ev of extraVocab) {
+      const existing = mergedVocab.find((v) => v.content.toLowerCase() === ev.content.toLowerCase());
+      if (existing) {
+        existing.sounds_like = [...new Set([...existing.sounds_like, ...ev.sounds_like])];
+      } else {
+        mergedVocab.push(ev);
+      }
+    }
+  }
+
+  return JSON.stringify({
+    type: "transcription",
+    transcription_config: {
+      language: CONFIG.LANGUAGE,
+      model: "enhanced",
+      diarization: "speaker",
+      speaker_diarization_config: {
+        prefer_current_speaker: true,
+      },
+      enable_entities: true,
+      punctuation_overrides: {
+        permitted_marks: "all",
+        sensitivity: 0.6,
+      },
+      transcript_filtering_config: {
+        replacements: [
+          { from: "ahmadi", to: "A'mari" },
+          { from: "Ahmadi", to: "A'mari" },
+          { from: "inshallah", to: "Insha'Allah" },
+          { from: "Inshallah", to: "Insha'Allah" },
+          { from: "mashallah", to: "Masha'Allah" },
+          { from: "Mashallah", to: "Masha'Allah" },
+          { from: "subhanallah", to: "Subhan'Allah" },
+          { from: "Subhanallah", to: "Subhan'Allah" },
+        ],
+      },
+      additional_vocab: mergedVocab,
+    },
+  });
+}
+
 // ===== StartRecognition message (Section 3.3) =====
 export function buildStartRecognition(extraVocab?: Array<{ content: string; sounds_like: string[] }>): string {
   // Baseline vocabulary from ACCURACY_CONFIG_FIX.md (fixed starter list)
