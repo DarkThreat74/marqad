@@ -33,6 +33,7 @@ import {
   exportHistoryJSON,
   importHistoryJSON,
 } from "@/lib/marqad";
+import { webmToMp3, downloadBlob, saveAudioToDB } from "@/lib/audio";
 
 // ============================================================
 // Memoized segment view
@@ -473,6 +474,12 @@ export default function Marqad() {
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const zeroGainRef = useRef<GainNode | null>(null);
+  // Simultaneous local recording (both live and batch modes)
+  const localRecorderRef = useRef<MediaRecorder | null>(null);
+  const localChunksRef = useRef<Blob[]>([]);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [convertingMp3, setConvertingMp3] = useState(false);
+  const [audioSaved, setAudioSaved] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const elapsedRef = useRef(0);
   const recognitionStartedRef = useRef(false);
@@ -1076,6 +1083,55 @@ export default function Marqad() {
     armedTimerRef.current = setTimeout(() => setArmed(false), 4000);
   }, []);
 
+  // Start simultaneous local recording (webm/opus) for download/backup.
+  // Works alongside both the WebSocket stream (live) and the batch submission.
+  // The recording is kept even if transcription fails.
+  const startLocalRecording = useCallback((stream: MediaStream) => {
+    try {
+      const recorder = new MediaRecorder(stream, {
+        mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm",
+        audioBitsPerSecond: 128000,
+      });
+      localChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) localChunksRef.current.push(e.data);
+      };
+      recorder.start(1000); // collect data every 1 second
+      localRecorderRef.current = recorder;
+    } catch {
+      // Non-fatal — local recording is a backup, not critical
+      console.warn("[Marqad] Could not start local recording");
+    }
+  }, []);
+
+  // Stop local recording and return the audio blob
+  const stopLocalRecording = useCallback(async (): Promise<Blob | null> => {
+    const recorder = localRecorderRef.current;
+    if (!recorder) return null;
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      recorder.onstop = () => {
+        if (localChunksRef.current.length === 0) {
+          resolve(null);
+          return;
+        }
+        const b = new Blob(localChunksRef.current, { type: "audio/webm" });
+        resolve(b);
+      };
+      try {
+        recorder.stop();
+      } catch {
+        resolve(null);
+      }
+    });
+
+    localRecorderRef.current = null;
+    localChunksRef.current = [];
+    return blob;
+  }, []);
+
   const confirmStart = useCallback(async () => {
     if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     setArmed(false);
@@ -1154,6 +1210,11 @@ export default function Marqad() {
         },
       });
       mediaStreamRef.current = stream;
+
+      // Start simultaneous local recording for download/backup
+      startLocalRecording(stream);
+      setAudioBlob(null);
+      setAudioSaved(false);
 
       const audioCtx = new AudioContext({ sampleRate: CONFIG.SAMPLE_RATE });
       audioCtxRef.current = audioCtx;
@@ -1307,6 +1368,10 @@ export default function Marqad() {
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
     if (startTimeoutRef.current) { clearTimeout(startTimeoutRef.current); startTimeoutRef.current = null; }
+    // Stop local recorder if still running (teardown from error/unmount)
+    if (localRecorderRef.current && localRecorderRef.current.state !== "inactive") {
+      try { localRecorderRef.current.stop(); } catch {}
+    }
     // Cancel animation frame
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     // Release wake lock
@@ -1379,6 +1444,16 @@ export default function Marqad() {
 
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
+
+    // Stop local recording and keep the audio blob for download
+    const sessionId = `session-${Date.now()}`;
+    stopLocalRecording().then((blob) => {
+      if (blob) {
+        setAudioBlob(blob);
+        console.log("[Marqad] Local recording saved:", blob.size, "bytes");
+      }
+    });
+
     teardown();
     setRecState("idle");
     setStatusText("Stopped");
@@ -1394,7 +1469,7 @@ export default function Marqad() {
         .join(" ")
         .slice(0, 120);
       const record: SessionRecord = {
-        id: `session-${Date.now()}`,
+        id: sessionId,
         date: new Date().toISOString(),
         durationSec: streamingSec,
         segmentCount: currentSegments.length,
@@ -1668,20 +1743,11 @@ export default function Marqad() {
       });
       mediaStreamRef.current = stream;
 
-      // Use MediaRecorder for local audio capture (compressed webm/opus)
-      // 128kbps is high quality for speech — clear enough for batch transcription
-      const recorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-          ? "audio/webm;codecs=opus"
-          : "audio/webm",
-        audioBitsPerSecond: 128000,
-      });
-      batchChunksRef.current = [];
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) batchChunksRef.current.push(e.data);
-      };
-      recorder.start(1000); // collect data every 1 second
-      mediaRecorderRef.current = recorder;
+      // Use the shared local recording helper — same recorder serves as
+      // both the batch audio source AND the downloadable backup.
+      setAudioBlob(null);
+      setAudioSaved(false);
+      startLocalRecording(stream);
 
       setBatchRecording(true);
       setRecState("recording");
@@ -1734,9 +1800,6 @@ export default function Marqad() {
   }, [batchProcessing]);
 
   const stopBatchRecording = useCallback(async () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder) return;
-
     // Stop timers
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
@@ -1748,11 +1811,11 @@ export default function Marqad() {
       setUsageStats(getUsageStats(sessionStreamingSecRef.current));
     }
 
-    // Stop recorder and wait for final data
-    await new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
-      recorder.stop();
-    });
+    // Stop local recording and get the audio blob
+    // This is the SAME recorder used for batch submission — we keep the
+    // blob even if transcription fails, so the user never loses their recording.
+    const audioBlob = await stopLocalRecording();
+    console.log("[Marqad] Batch: audio blob size:", audioBlob?.size || 0, "bytes,", ((audioBlob?.size || 0) / 1024 / 1024).toFixed(2), "MB");
 
     // Stop mic stream
     if (mediaStreamRef.current) {
@@ -1763,16 +1826,17 @@ export default function Marqad() {
     // Release wake lock — recording is done, screen can sleep now
     releaseWakeLock();
 
+    // Keep the audio blob available for download regardless of what happens next
+    if (audioBlob) setAudioBlob(audioBlob);
+
     setBatchRecording(false);
     setBatchProcessing(true);
     setRecState("processing");
     setBatchStatus("Uploading audio to Speechmatics...");
 
-    // Create audio blob from collected chunks
-    const audioBlob = new Blob(batchChunksRef.current, { type: "audio/webm" });
-    console.log("[Marqad] Batch: audio blob size:", audioBlob.size, "bytes,", (audioBlob.size / 1024 / 1024).toFixed(2), "MB");
-
     try {
+      if (!audioBlob) throw new Error("No audio recorded — microphone may not be available");
+
       // Step 1: Get a batch JWT from the Edge Function
       console.log("[Marqad] Batch: fetching batch token from", CONFIG.BATCH_TOKEN_ENDPOINT);
       const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
@@ -1926,9 +1990,44 @@ export default function Marqad() {
       setRecState("idle");
       setStatusKind("error");
       setStatusText(`Batch error: ${err.message}`);
-      setBatchStatus(`Error: ${err.message}`);
+      // Keep the error message visible AND keep the audio blob available
+      // for download — the recording is NOT lost even if transcription failed.
+      setBatchStatus(`Error: ${err.message}. You can still download the recording.`);
     }
-  }, [releaseWakeLock]);
+  }, [releaseWakeLock, stopLocalRecording]);
+
+  // ============================================================
+  // Audio download / save
+  // ============================================================
+
+  const handleDownloadMp3 = useCallback(async () => {
+    if (!audioBlob) return;
+    setConvertingMp3(true);
+    try {
+      const mp3Blob = await webmToMp3(audioBlob);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      downloadBlob(mp3Blob, `marqad-${timestamp}.mp3`);
+    } catch (err) {
+      console.error("[Marqad] MP3 conversion failed:", err);
+      // Fallback: download the webm directly
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      downloadBlob(audioBlob, `marqad-${timestamp}.webm`);
+    }
+    setConvertingMp3(false);
+  }, [audioBlob]);
+
+  const handleSaveAudio = useCallback(async () => {
+    if (!audioBlob) return;
+    // Find the most recent session ID from history
+    const recent = history[0];
+    const sessionId = recent?.id || `session-${Date.now()}`;
+    try {
+      await saveAudioToDB(sessionId, audioBlob);
+      setAudioSaved(true);
+    } catch (err) {
+      console.error("[Marqad] Could not save audio:", err);
+    }
+  }, [audioBlob, history]);
 
   // Keep stopBatchRecording ref in sync (must be after declaration)
   useEffect(() => {
@@ -1984,6 +2083,8 @@ export default function Marqad() {
     setElapsedSec(0);
     setStatusText("Ready");
     setStatusKind("idle");
+    setAudioBlob(null);
+    setAudioSaved(false);
   }, [recState, stopRecording]);
 
   // Save edited transcript as a new history entry
@@ -2178,6 +2279,26 @@ export default function Marqad() {
               >
                 + New
               </button>
+              {audioBlob && recState === "idle" && !batchProcessing && (
+                <>
+                  <button
+                    className="copy-btn"
+                    onClick={handleDownloadMp3}
+                    disabled={convertingMp3}
+                    title="Download recording as MP3"
+                  >
+                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                  </button>
+                  <button
+                    className={`copy-btn ${audioSaved ? "copied" : ""}`}
+                    onClick={handleSaveAudio}
+                    disabled={audioSaved}
+                    title="Save recording to this browser for later"
+                  >
+                    {audioSaved ? "✓ Saved" : "Save Audio"}
+                  </button>
+                </>
+              )}
             </>
           ) : (
             <>
@@ -2245,6 +2366,28 @@ export default function Marqad() {
                     disabled={segments.length === 0}
                   >
                     {copied ? "✓ Copied" : "Copy"}
+                  </button>
+                </>
+              )}
+
+              {/* Audio download / save — shown after recording stops */}
+              {audioBlob && recState === "idle" && !batchProcessing && (
+                <>
+                  <button
+                    className="copy-btn"
+                    onClick={handleDownloadMp3}
+                    disabled={convertingMp3}
+                    title="Download recording as MP3"
+                  >
+                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                  </button>
+                  <button
+                    className={`copy-btn ${audioSaved ? "copied" : ""}`}
+                    onClick={handleSaveAudio}
+                    disabled={audioSaved}
+                    title="Save recording to this browser for later"
+                  >
+                    {audioSaved ? "✓ Saved" : "Save Audio"}
                   </button>
                 </>
               )}
