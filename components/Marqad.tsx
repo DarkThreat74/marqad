@@ -492,6 +492,7 @@ export default function Marqad() {
   const shouldReconnectRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAudioEndRef = useRef<number | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
   const segIdCounter = useRef(0);
@@ -688,6 +689,9 @@ export default function Marqad() {
     } catch {
       return;
     }
+
+    // Log every message for debugging
+    console.log("[Marqad] WS message:", msg.message, msg.type || "");
 
     switch (msg.message) {
       case "RecognitionStarted":
@@ -927,6 +931,7 @@ export default function Marqad() {
   const connectWebSocket = useCallback(async () => {
     setStatusText("Fetching token...");
     setStatusKind("connecting");
+    console.log("[Marqad] connectWebSocket — fetching token from", CONFIG.TOKEN_ENDPOINT);
 
     let jwt: string;
     try {
@@ -937,6 +942,7 @@ export default function Marqad() {
         throw new Error("Token endpoint not configured");
       }
       const resp = await fetch(CONFIG.TOKEN_ENDPOINT);
+      console.log("[Marqad] Token response:", resp.status, resp.statusText);
       if (!resp.ok) {
         const errData = await resp.json().catch(() => ({}));
         throw new Error(errData.error || `HTTP ${resp.status}`);
@@ -945,6 +951,7 @@ export default function Marqad() {
       if (data.error) throw new Error(data.error);
       jwt = data.jwt;
       if (!jwt) throw new Error("No jwt in response");
+      console.log("[Marqad] Token acquired, opening WebSocket");
     } catch (err: any) {
       let msg: string;
       if (!navigator.onLine || err.message.includes("Failed to fetch") || err.message.includes("NetworkError")) {
@@ -977,17 +984,42 @@ export default function Marqad() {
       if (cache && cache.vocab.length > 0) {
         extraVocab = cache.vocab;
       }
-      ws.send(buildStartRecognition(extraVocab));
+      const configMsg = buildStartRecognition(extraVocab);
+      console.log("[Marqad] Sending StartRecognition, vocab size:", extraVocab?.length || 0);
+      ws.send(configMsg);
       setStatusText("Starting recognition...");
+
+      // Timeout — if Speechmatics doesn't respond within 25 seconds, something is wrong
+      // (additional_vocab can cause up to 15s delay per docs, give extra margin)
+      if (startTimeoutRef.current) clearTimeout(startTimeoutRef.current);
+      startTimeoutRef.current = setTimeout(() => {
+        if (!recognitionStartedRef.current && wsRef.current === ws) {
+          console.error("[Marqad] RecognitionStarted timeout — no response in 25s");
+          setStatusText("Speechmatics not responding — check console for details");
+          setStatusKind("error");
+          shouldReconnectRef.current = false;
+          setRecState("idle");
+          teardown();
+          try { ws.close(); } catch {}
+        }
+      }, 25000);
 
       // Background refresh (non-blocking) — check if cache is stale
       // If so, refetch and update cache for the NEXT session
       refreshVocabInBackground();
     };
 
-    ws.onmessage = handleWsMessage;
+    ws.onmessage = (event) => {
+      // Clear startup timeout on any message from Speechmatics
+      if (startTimeoutRef.current) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
+      handleWsMessage(event);
+    };
 
-    ws.onerror = () => {
+    ws.onerror = (event) => {
+      console.error("[Marqad] WebSocket error:", event);
       if (!navigator.onLine) {
         setStatusText("You're offline — transcription paused");
       } else {
@@ -997,13 +1029,17 @@ export default function Marqad() {
     };
 
     ws.onclose = (event) => {
+      if (startTimeoutRef.current) {
+        clearTimeout(startTimeoutRef.current);
+        startTimeoutRef.current = null;
+      }
       if (wsRef.current === ws) {
         wsRef.current = null;
       }
       recognitionStartedRef.current = false;
 
       // Log close details for debugging
-      console.warn(`WebSocket closed: code=${event.code}, reason="${event.reason}"`);
+      console.warn(`[Marqad] WebSocket closed: code=${event.code}, reason="${event.reason}"`);
 
       if (shouldReconnectRef.current && !isPausedRef.current && reconnectAttemptsRef.current < 4) {
         const delays = [2000, 5000, 10000, 20000];
@@ -1015,11 +1051,17 @@ export default function Marqad() {
           connectWebSocket();
         }, delay);
       } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 4) {
-        const reason = event.reason ? `: ${event.reason}` : "";
+        const reason = event.reason ? `: ${event.reason}` : ` (code ${event.code})`;
         setStatusText(`Connection failed${reason}`);
         setStatusKind("error");
         setRecState("idle");
         shouldReconnectRef.current = false;
+      } else {
+        // shouldReconnectRef is false — Error handler already set the error message.
+        // But make sure we're not stuck in "connecting" state.
+        if (recState !== "idle") {
+          setRecState("idle");
+        }
       }
     };
 
@@ -1261,6 +1303,7 @@ export default function Marqad() {
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
     if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    if (startTimeoutRef.current) { clearTimeout(startTimeoutRef.current); startTimeoutRef.current = null; }
     // Cancel animation frame
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
 
