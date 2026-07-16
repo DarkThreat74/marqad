@@ -495,7 +495,10 @@ export default function Marqad() {
   const startTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wakeLockRef = useRef<any>(null); // Screen Wake Lock — keeps screen on during recording
   const startBatchRecordingRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const stopBatchRecordingRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const acquireWakeLockRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const batchRecordingRef = useRef(false);
+  const batchProcessingRef = useRef(false);
   const lastAudioEndRef = useRef<number | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
   const segIdCounter = useRef(0);
@@ -1372,12 +1375,14 @@ export default function Marqad() {
 
   const stopRecording = useCallback(() => {
     // Batch mode: stop batch recording and submit for transcription
-    if (batchRecording) {
-      stopBatchRecording();
+    // Use refs to avoid stale closure — batchRecording/batchProcessing are
+    // state values that won't be fresh in this callback otherwise.
+    if (batchRecordingRef.current) {
+      stopBatchRecordingRef.current();
       return;
     }
     // Don't allow stop during batch processing (the job is already submitted)
-    if (batchProcessing) return;
+    if (batchProcessingRef.current) return;
 
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
@@ -1721,13 +1726,19 @@ export default function Marqad() {
     }
   }, [acquireWakeLock]);
 
-  // Keep refs in sync so confirmStart can call them without ordering issues
+  // Keep refs in sync so confirmStart/stopRecording can call them without ordering issues
   useEffect(() => {
     startBatchRecordingRef.current = startBatchRecording;
   }, [startBatchRecording]);
   useEffect(() => {
     acquireWakeLockRef.current = acquireWakeLock;
   }, [acquireWakeLock]);
+  useEffect(() => {
+    batchRecordingRef.current = batchRecording;
+  }, [batchRecording]);
+  useEffect(() => {
+    batchProcessingRef.current = batchProcessing;
+  }, [batchProcessing]);
 
   const stopBatchRecording = useCallback(async () => {
     const recorder = mediaRecorderRef.current;
@@ -1766,14 +1777,18 @@ export default function Marqad() {
 
     // Create audio blob from collected chunks
     const audioBlob = new Blob(batchChunksRef.current, { type: "audio/webm" });
+    console.log("[Marqad] Batch: audio blob size:", audioBlob.size, "bytes,", (audioBlob.size / 1024 / 1024).toFixed(2), "MB");
 
     try {
       // Step 1: Get a batch JWT from the Edge Function
+      console.log("[Marqad] Batch: fetching batch token from", CONFIG.BATCH_TOKEN_ENDPOINT);
       const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
-      if (!tokenResp.ok) throw new Error("Could not get batch token");
+      console.log("[Marqad] Batch: token response:", tokenResp.status, tokenResp.statusText);
+      if (!tokenResp.ok) throw new Error(`Could not get batch token (HTTP ${tokenResp.status})`);
       const tokenData = await tokenResp.json();
       const batchJwt = tokenData.jwt;
       if (!batchJwt) throw new Error("No batch JWT in response");
+      console.log("[Marqad] Batch: token acquired");
 
       // Step 2: Build config (reuse the same config as live mode)
       const cache = loadVocabCache();
@@ -1785,6 +1800,7 @@ export default function Marqad() {
         type: "transcription",
         transcription_config: parsed.transcription_config,
       };
+      console.log("[Marqad] Batch: config built, language:", parsed.transcription_config.language);
 
       // Step 3: Create batch job — upload audio directly to Speechmatics
       const formData = new FormData();
@@ -1792,6 +1808,7 @@ export default function Marqad() {
       formData.append("config", JSON.stringify(batchConfig));
 
       setBatchStatus("Submitting to Speechmatics Batch API...");
+      console.log("[Marqad] Batch: submitting job to", `${CONFIG.BATCH_API_HOST}/jobs/`);
 
       const jobResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/`, {
         method: "POST",
@@ -1801,15 +1818,18 @@ export default function Marqad() {
         body: formData,
       });
 
+      console.log("[Marqad] Batch: job response:", jobResp.status, jobResp.statusText);
       if (!jobResp.ok) {
         const errText = await jobResp.text();
-        throw new Error(`Batch job creation failed: ${errText}`);
+        console.error("[Marqad] Batch: job creation failed:", errText);
+        throw new Error(`Batch job creation failed (HTTP ${jobResp.status}): ${errText}`);
       }
 
       const jobData = await jobResp.json();
       const jobId = jobData.id;
       if (!jobId) throw new Error("No job ID in response");
       batchJobIdRef.current = jobId;
+      console.log("[Marqad] Batch: job created, ID:", jobId);
 
       // Step 4: Poll job status every 5 seconds
       // For a 1-hour recording, batch processing may take several minutes.
@@ -1837,10 +1857,15 @@ export default function Marqad() {
           const statusResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/${jobId}`, {
             headers: { "Authorization": `Bearer ${batchJwt}` },
           });
-          if (!statusResp.ok) return;
+          if (!statusResp.ok) {
+            console.warn("[Marqad] Batch: status check failed:", statusResp.status);
+            return;
+          }
           const statusData = await statusResp.json();
+          const status = statusData.job?.status;
+          console.log("[Marqad] Batch: job status:", status);
 
-          if (statusData.job?.status === "done") {
+          if (status === "done") {
             // Stop polling
             if (batchPollRef.current) {
               clearInterval(batchPollRef.current);
@@ -1848,6 +1873,7 @@ export default function Marqad() {
             }
 
             setBatchStatus("Fetching transcript...");
+            console.log("[Marqad] Batch: job done, fetching transcript");
 
             // Fetch transcript (txt format for simplicity)
             const transcriptResp = await fetch(
@@ -1855,8 +1881,15 @@ export default function Marqad() {
               { headers: { "Authorization": `Bearer ${batchJwt}` } }
             );
 
-            if (!transcriptResp.ok) throw new Error("Could not fetch transcript");
+            console.log("[Marqad] Batch: transcript response:", transcriptResp.status, transcriptResp.statusText);
+            if (!transcriptResp.ok) throw new Error(`Could not fetch transcript (HTTP ${transcriptResp.status})`);
             const transcriptText = await transcriptResp.text();
+            console.log("[Marqad] Batch: transcript received, length:", transcriptText.length, "chars");
+            console.log("[Marqad] Batch: transcript preview:", transcriptText.slice(0, 200));
+
+            if (!transcriptText.trim()) {
+              throw new Error("Transcript is empty — the recording may have been silent");
+            }
 
             // Save to history (same as live mode)
             const record: SessionRecord = {
@@ -1879,31 +1912,40 @@ export default function Marqad() {
             setStatusText("Ready");
             setStatusKind("idle");
             setBatchStatus("");
-          } else if (statusData.job?.status === "rejected") {
+            console.log("[Marqad] Batch: complete, transcript displayed");
+          } else if (status === "rejected") {
             if (batchPollRef.current) {
               clearInterval(batchPollRef.current);
               batchPollRef.current = null;
             }
-            const rejectReason = statusData.job?.error || "unknown error";
+            const rejectReason = statusData.job?.error || statusData.job?.errors || "unknown error";
+            console.error("[Marqad] Batch: job rejected:", JSON.stringify(statusData));
             setBatchStatus(`Transcription failed: ${rejectReason}`);
             setBatchProcessing(false);
             setRecState("idle");
             setStatusKind("error");
             setStatusText(`Batch transcription failed: ${rejectReason}`);
           }
-        } catch {
+        } catch (pollErr) {
+          console.error("[Marqad] Batch: polling error:", pollErr);
           // Polling error — keep trying, will retry on next interval
         }
       }, 5000);
 
     } catch (err: any) {
+      console.error("[Marqad] Batch: fatal error:", err);
       setBatchProcessing(false);
       setRecState("idle");
       setStatusKind("error");
       setStatusText(`Batch error: ${err.message}`);
-      setBatchStatus("");
+      setBatchStatus(`Error: ${err.message}`);
     }
   }, [releaseWakeLock]);
+
+  // Keep stopBatchRecording ref in sync (must be after declaration)
+  useEffect(() => {
+    stopBatchRecordingRef.current = stopBatchRecording;
+  }, [stopBatchRecording]);
 
   // ============================================================
   // History handlers
