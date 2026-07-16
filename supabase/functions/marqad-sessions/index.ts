@@ -70,6 +70,12 @@ serve(async (req) => {
         audio_path,
         audio_size,
         audio_format,
+        batch_model,
+        batch_words,
+        ai_reasoning_transcript,
+        ai_reasoning_at,
+        reconciled_transcript,
+        reconciled_at,
       } = body;
 
       if (!id) {
@@ -79,7 +85,7 @@ serve(async (req) => {
         );
       }
 
-      const record = {
+      const record: Record<string, any> = {
         id,
         user_id: USER_ID,
         date: date || new Date().toISOString(),
@@ -91,6 +97,14 @@ serve(async (req) => {
         audio_size: audio_size || null,
         audio_format: audio_format || "webm",
       };
+
+      // Phase 1 & 2 optional fields — only set if provided (nullable columns)
+      if (batch_model !== undefined) record.batch_model = batch_model;
+      if (batch_words !== undefined) record.batch_words = batch_words;
+      if (ai_reasoning_transcript !== undefined) record.ai_reasoning_transcript = ai_reasoning_transcript;
+      if (ai_reasoning_at !== undefined) record.ai_reasoning_at = ai_reasoning_at;
+      if (reconciled_transcript !== undefined) record.reconciled_transcript = reconciled_transcript;
+      if (reconciled_at !== undefined) record.reconciled_at = reconciled_at;
 
       const { data, error } = await supabase
         .from("marqad_sessions")

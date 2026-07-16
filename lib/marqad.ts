@@ -35,7 +35,25 @@ export const CONFIG = {
   // The browser's autoGainControl handles mild normalization; this provides
   // an additional fixed boost on top for very quiet sources.
   INPUT_GAIN: 4.0,
+  // Gemini AI-reasoning endpoint (Phase 2) — edge function proxy that
+  // holds the GEMINI_API_KEY server-side.
+  GEMINI_ENDPOINT:
+    process.env.NEXT_PUBLIC_SUPABASE_URL
+      ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/gemini-transcribe`
+      : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/gemini-transcribe",
+  // Exact model string confirmed against live docs (2026-07-16):
+  // https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
+  GEMINI_MODEL: "gemini-3.1-pro-preview",
 };
+
+// ===== Gemini cost estimates (Phase 2.1) =====
+// Based on live pricing (2026-07-16): $2/M input, $12/M output (standard, ≤200k tokens).
+// Audio: ~25 tokens/sec → 90,000 tokens/hour input → $0.18/hr input.
+// Output: ~8,000-12,000 tokens for a full transcript → $0.10-0.14/hr output.
+// Batch API: 50% off → ~$0.14-0.16/hr.
+// These are estimates for UI display, not billing-accurate.
+export const GEMINI_COST_PER_HOUR_STANDARD = 0.30; // conservative estimate
+export const GEMINI_COST_PER_HOUR_BATCH = 0.16;   // 50% off via Batch API
 
 // ===== Vocabulary cache (Section 1.2 — localStorage caching) =====
 // Caches the merged additional_vocab array so session start doesn't block
@@ -226,6 +244,17 @@ export function isUncertain(word: string): boolean {
   return hasAtypicalConsonantClusters(word);
 }
 
+// ===== Confidence-score flagging (Phase 1.1) =====
+// Distinct from isUncertain: this uses the model's own per-word confidence
+// score (0-1), not a phonetic heuristic. A confidently-wrong substitution
+// will NOT be caught by this — only words the model itself was unsure about.
+// Starting threshold 0.6 — calibrate against real data after a few sessions.
+export const LOW_CONFIDENCE_THRESHOLD = 0.6;
+
+export function isLowConfidence(confidence: number): boolean {
+  return confidence > 0 && confidence < LOW_CONFIDENCE_THRESHOLD;
+}
+
 // ===== Word classification — determines CSS class(es) =====
 export function classifyWord(
   word: WordToken,
@@ -322,8 +351,20 @@ export function float32ToInt16(float32: Float32Array): ArrayBuffer {
 // Notably: no enable_partials, no max_delay, no conversation_config,
 // no max_delay_mode. But it does support enable_entities, diarization,
 // additional_vocab, punctuation_overrides, and transcript_filtering_config.
-export function buildBatchConfig(extraVocab?: Array<{ content: string; sounds_like: string[] }>): string {
-  // Reuse the same vocab merging logic as buildStartRecognition
+//
+// Two models are supported:
+// - "enhanced" (default): highest accuracy, supports additional_vocab,
+//   transcript_filtering_config, enable_entities, and confidence scores.
+// - "melia-1": genuinely multilingual with per-word language detection.
+//   Batch-only. Does NOT support additional_vocab, transcript_filtering_config,
+//   enable_entities, or confidence scores (as of 2026-07-16 — verify live
+//   before relying on this). Use language: "multi" (not "ar_en" or "auto").
+export type BatchModel = "enhanced" | "melia-1";
+
+export function buildBatchConfig(
+  extraVocab?: Array<{ content: string; sounds_like: string[] }>,
+  model: BatchModel = "enhanced"
+): string {
   const baselineVocab = [
     { content: "Mishkat", sounds_like: ["mish-kaat", "mishkat", "mishkaat"] },
     { content: "Sharh al Wiqayah", sounds_like: ["sharh al wiqaya", "sharhul wiqaya", "wiqayah"] },
@@ -394,6 +435,32 @@ export function buildBatchConfig(extraVocab?: Array<{ content: string; sounds_li
     }
   }
 
+  // --- Melia 1: minimal config — no additional_vocab, no transcript_filtering,
+  //     no enable_entities (all unsupported as of 2026-07-16). Uses language:
+  //     "multi" (rejects "auto" and single-language-pack values like "ar_en").
+  if (model === "melia-1") {
+    return JSON.stringify({
+      type: "transcription",
+      transcription_config: {
+        language: "multi",
+        model: "melia-1",
+        diarization: "speaker",
+        speaker_diarization_config: {
+          prefer_current_speaker: true,
+        },
+        // Omitting permitted_marks defaults to all punctuation marks.
+        punctuation_overrides: {
+          sensitivity: 0.6,
+        },
+        // additional_vocab, transcript_filtering_config, enable_entities,
+        // and confidence scores are NOT supported on Melia 1 yet.
+        // Do not include them — the API will reject the job if they're set.
+      },
+    });
+  }
+
+  // --- Enhanced (default): full feature set — additional_vocab,
+  //     transcript_filtering_config, enable_entities, confidence scores.
   return JSON.stringify({
     type: "transcription",
     transcription_config: {
@@ -424,6 +491,153 @@ export function buildBatchConfig(extraVocab?: Array<{ content: string; sounds_li
       additional_vocab: mergedVocab,
     },
   });
+}
+
+// ===== Batch transcript parsing (JSON format) =====
+// The Batch API returns JSON with per-word results including confidence
+// scores, language, speaker, and direction. This parser converts that
+// into WordToken[] for rendering with confidence flagging.
+// Only Enhanced model returns confidence scores — Melia 1 does not yet.
+export interface BatchWordResult {
+  content: string;
+  confidence: number;
+  speaker: string;
+  language: string;
+  direction: "ltr" | "rtl";
+  type: "word" | "punctuation" | "spacing" | "pause";
+}
+
+export function parseBatchTranscriptJSON(json: any): {
+  words: BatchWordResult[];
+  transcriptText: string;
+} {
+  const results: any[] = json?.results || [];
+  const words: BatchWordResult[] = [];
+  let transcriptText = "";
+
+  for (const r of results) {
+    const type = r.type || "word";
+    if (type === "entity") {
+      // Entities are treated as words (like in the live parser)
+      const alt = r.alternatives?.[0] || {};
+      const content = alt.content || "";
+      if (!content) continue;
+      words.push({
+        content,
+        confidence: alt.confidence || 0,
+        speaker: alt.speaker || "UU",
+        language: alt.language || "",
+        direction: (alt.direction as "ltr" | "rtl") || (alt.language?.startsWith("ar") ? "rtl" : "ltr"),
+        type: "word",
+      });
+      transcriptText += content + " ";
+      continue;
+    }
+
+    if (type === "punctuation") {
+      const alt = r.alternatives?.[0] || {};
+      const content = alt.content || "";
+      if (!content) continue;
+      words.push({
+        content,
+        confidence: alt.confidence || 0,
+        speaker: alt.speaker || "UU",
+        language: alt.language || "",
+        direction: "ltr",
+        type: "punctuation",
+      });
+      transcriptText += content;
+      continue;
+    }
+
+    // type === "word"
+    const alt = r.alternatives?.[0] || {};
+    const content = alt.content || "";
+    if (!content) continue;
+    const lang = alt.language || "";
+    const dir = (alt.direction as "ltr" | "rtl") || (lang.startsWith("ar") ? "rtl" : "ltr");
+    words.push({
+      content,
+      confidence: alt.confidence || 0,
+      speaker: alt.speaker || "UU",
+      language: lang,
+      direction: dir,
+      type: "word",
+    });
+    transcriptText += content + " ";
+  }
+
+  return { words, transcriptText: transcriptText.trim() };
+}
+
+// ===== Gemini AI-reasoning + reconciliation (Phase 2) =====
+// Both functions send audio to the Gemini edge function proxy.
+// The edge function holds the GEMINI_API_KEY server-side.
+
+// Convert a Blob to base64 string for sending to the edge function
+async function blobToBase64(blob: Blob): Promise<string> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// Run an AI reasoning pass — Gemini listens to the audio and produces
+// an independent transcript. This is NOT a correction of the Speechmatics
+// transcript; it's a fresh listen from scratch.
+export async function runAiReasoningTranscribe(
+  audioBlob: Blob
+): Promise<{ transcript: string; usage: any }> {
+  const audioBase64 = await blobToBase64(audioBlob);
+  const resp = await fetch(CONFIG.GEMINI_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "transcribe",
+      audioBase64,
+      audioMimeType: audioBlob.type || "audio/webm",
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(err.detail || err.error || `Gemini API error (HTTP ${resp.status})`);
+  }
+  const data = await resp.json();
+  return { transcript: data.transcript, usage: data.usage };
+}
+
+// Reconcile two transcripts using the original audio as ground truth.
+// Sends audio + both transcripts + vocab corrections to Gemini.
+// Per the spec: NEVER simplify to text-only — audio access is what makes
+// this safe vs. the over-correction-prone text-only pattern.
+export async function runReconcileTranscript(
+  audioBlob: Blob,
+  transcriptA: string,        // Speechmatics (from Phase 1 Batch mode)
+  transcriptB: string,        // Gemini's AI reasoning pass
+  vocabCorrections: Array<{ wrongText: string; correctText: string }>
+): Promise<{ transcript: string; usage: any }> {
+  const audioBase64 = await blobToBase64(audioBlob);
+  const resp = await fetch(CONFIG.GEMINI_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "reconcile",
+      audioBase64,
+      audioMimeType: audioBlob.type || "audio/webm",
+      transcriptA,
+      transcriptB,
+      vocabCorrections,
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(err.detail || err.error || `Gemini API error (HTTP ${resp.status})`);
+  }
+  const data = await resp.json();
+  return { transcript: data.transcript, usage: data.usage };
 }
 
 // ===== StartRecognition message (Section 3.3) =====
@@ -592,6 +806,14 @@ export interface SessionRecord {
   exportText: string;    // full export text for re-copy/view
   audioPath?: string | null;    // Supabase Storage path (if audio was saved)
   audioSize?: number | null;    // audio file size in bytes
+  // Phase 1 — Batch mode metadata
+  batchModel?: "enhanced" | "melia-1";  // which model produced this transcript
+  batchWords?: BatchWordResult[];       // per-word results with confidence (Enhanced only)
+  // Phase 2 — AI reasoning + reconciliation (never replace exportText)
+  aiReasoningTranscript?: string;   // Gemini's independent pass, if run
+  aiReasoningAt?: string;           // ISO timestamp
+  reconciledTranscript?: string;    // merged result, if run
+  reconciledAt?: string;            // ISO timestamp
 }
 
 const HISTORY_KEY = "marqad-history";
@@ -673,13 +895,22 @@ export async function saveSessionToDB(record: SessionRecord): Promise<void> {
         audio_path: record.audioPath || null,
         audio_size: record.audioSize || null,
         audio_format: "webm",
+        batch_model: record.batchModel || null,
+        batch_words: record.batchWords || null,
+        ai_reasoning_transcript: record.aiReasoningTranscript || null,
+        ai_reasoning_at: record.aiReasoningAt || null,
+        reconciled_transcript: record.reconciledTranscript || null,
+        reconciled_at: record.reconciledAt || null,
       }),
     });
     if (!resp.ok) {
-      console.warn("[Marqad] saveSessionToDB failed:", resp.status);
+      // Log loudly — silent failures here caused total history loss when
+      // the edge function was undeployed. The caller's .catch() swallows
+      // the error, so this console.error is the only visible signal.
+      console.error("[Marqad] saveSessionToDB FAILED — sessions are NOT being saved to the database. Check that the marqad-sessions edge function is deployed. HTTP", resp.status);
     }
   } catch (err) {
-    console.warn("[Marqad] saveSessionToDB error:", err);
+    console.error("[Marqad] saveSessionToDB error — sessions are NOT being saved to the database:", err);
   }
 }
 
@@ -700,10 +931,20 @@ export async function loadHistoryFromDB(): Promise<SessionRecord[]> {
       exportText: s.export_text || "",
       audioPath: s.audio_path || null,
       audioSize: s.audio_size || null,
+      batchModel: s.batch_model || undefined,
+      batchWords: s.batch_words || undefined,
+      aiReasoningTranscript: s.ai_reasoning_transcript || undefined,
+      aiReasoningAt: s.ai_reasoning_at || undefined,
+      reconciledTranscript: s.reconciled_transcript || undefined,
+      reconciledAt: s.reconciled_at || undefined,
     }));
   } catch (err) {
+    // CRITICAL: re-throw instead of returning [].
+    // Returning [] on error caused the useEffect to overwrite localStorage
+    // with an empty array, silently destroying all history when the DB
+    // endpoint was unreachable (e.g. edge function not deployed).
     console.warn("[Marqad] loadHistoryFromDB error:", err);
-    return [];
+    throw err;
   }
 }
 

@@ -8,6 +8,8 @@ import {
   type ViewFormat,
   type SessionRecord,
   type UsageStats,
+  type BatchModel,
+  type BatchWordResult,
   speakerColor,
   classifyWord,
   classifyPause,
@@ -19,6 +21,11 @@ import {
   isArabicText,
   isArabicWord,
   isFillerWord,
+  isLowConfidence,
+  parseBatchTranscriptJSON,
+  runAiReasoningTranscribe,
+  runReconcileTranscript,
+  GEMINI_COST_PER_HOUR_STANDARD,
   loadVocabCache,
   saveVocabCache,
   type VocabCacheEntry,
@@ -35,7 +42,7 @@ import {
   loadHistoryFromDB,
   deleteSessionFromDB,
 } from "@/lib/marqad";
-import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, uploadAudioToStorage } from "@/lib/audio";
+import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, getAudioFromDB, uploadAudioToStorage } from "@/lib/audio";
 
 // ============================================================
 // Memoized segment view
@@ -123,8 +130,15 @@ function renderWords(seg: Segment): React.ReactNode[] {
       const arabicContent = arabicWords
         .map((aw) => aw.content)
         .join(" ");
+      // Flag the Arabic run if any word in it has low confidence
+      const arabicClasses = ["arabic"];
+      if (arabicWords.some((aw) => isLowConfidence(aw.confidence))) {
+        arabicClasses.push("low-confidence");
+      }
       nodes.push(
-        <span key={`ar-${nodeIdx++}`} className="arabic" dir="rtl">
+        <span key={`ar-${nodeIdx++}`} className={arabicClasses.join(" ")} dir="rtl"
+          title={arabicClasses.includes("low-confidence") ? "model confidence was low for this word — worth double-checking against the audio if available" : undefined}
+        >
           {arabicContent}
         </span>
       );
@@ -139,12 +153,95 @@ function renderWords(seg: Segment): React.ReactNode[] {
       if (isFillerWord(w.content)) {
         classes.push("filler-word");
       }
+      // Flag low-confidence words (Phase 1.1) — distinct from .uncertain
+      if (isLowConfidence(w.confidence)) {
+        classes.push("low-confidence");
+      }
       nodes.push(
-        <span key={`w-${nodeIdx++}`} className={classes.join(" ")}>
+        <span key={`w-${nodeIdx++}`} className={classes.join(" ")}
+          title={isLowConfidence(w.confidence) ? "model confidence was low for this word — worth double-checking against the audio if available" : undefined}
+        >
           {w.content}
         </span>
       );
       sentenceInitial = false;
+      i++;
+    }
+  }
+  return nodes;
+}
+
+// ============================================================
+// Batch word rendering — renders BatchWordResult[] with confidence flagging
+// Used in viewing mode for batch Enhanced sessions (which have per-word confidence)
+// ============================================================
+function renderBatchWords(words: BatchWordResult[]): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  let nodeIdx = 0;
+  let i = 0;
+
+  while (i < words.length) {
+    const w = words[i];
+
+    if (w.type === "punctuation") {
+      nodes.push(<span key={`p-${nodeIdx++}`}>{w.content}</span>);
+      i++;
+      continue;
+    }
+
+    if (w.type === "word" && w.direction === "rtl") {
+      // Arabic run — collect consecutive RTL words
+      const arabicWords: BatchWordResult[] = [];
+      while (i < words.length) {
+        const cw = words[i];
+        if (cw.type === "punctuation") {
+          if (i + 1 < words.length && words[i + 1].direction === "rtl") {
+            arabicWords.push(cw);
+            i++;
+            continue;
+          }
+          break;
+        }
+        if (cw.direction === "rtl") {
+          arabicWords.push(cw);
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (nodes.length > 0) {
+        nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
+      }
+      const arabicContent = arabicWords.map((aw) => aw.content).join(" ");
+      const arabicClasses = ["arabic"];
+      if (arabicWords.some((aw) => isLowConfidence(aw.confidence))) {
+        arabicClasses.push("low-confidence");
+      }
+      nodes.push(
+        <span key={`ar-${nodeIdx++}`} className={arabicClasses.join(" ")} dir="rtl"
+          title={arabicClasses.includes("low-confidence") ? "model confidence was low for this word — worth double-checking against the audio if available" : undefined}
+        >
+          {arabicContent}
+        </span>
+      );
+    } else if (w.type === "word") {
+      // English/Latin word
+      if (nodes.length > 0) {
+        nodes.push(<span key={`sp-${nodeIdx++}`}> </span>);
+      }
+      const classes: string[] = [];
+      if (isLowConfidence(w.confidence)) {
+        classes.push("low-confidence");
+      }
+      nodes.push(
+        <span key={`w-${nodeIdx++}`} className={classes.join(" ")}
+          title={isLowConfidence(w.confidence) ? "model confidence was low for this word — worth double-checking against the audio if available" : undefined}
+        >
+          {w.content}
+        </span>
+      );
+      i++;
+    } else {
       i++;
     }
   }
@@ -444,6 +541,14 @@ export default function Marqad() {
   const [liveEditText, setLiveEditText] = useState("");
   const [isOnline, setIsOnline] = useState(true);
 
+  // --- Phase 2: AI reasoning + reconciliation ---
+  // transcriptSource: which transcript variant to show in viewing mode
+  const [transcriptSource, setTranscriptSource] = useState<"speechmatics" | "gemini" | "reconciled">("speechmatics");
+  const [aiReasoningLoading, setAiReasoningLoading] = useState(false);
+  const [reconcileLoading, setReconcileLoading] = useState(false);
+  const [aiReasoningError, setAiReasoningError] = useState<string | null>(null);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
+
   // --- Fix this popover (vocabulary correction) ---
   const [fixPopover, setFixPopover] = useState<{
     show: boolean;
@@ -457,7 +562,7 @@ export default function Marqad() {
   const transcriptAreaRef = useRef<HTMLDivElement | null>(null);
 
   // --- Recording mode (Live vs Batch) ---
-  const [recordingMode, setRecordingMode] = useState<"live" | "batch">("live");
+  const [recordingMode, setRecordingMode] = useState<"live" | "batch" | "batch-melia">("live");
   const [batchRecording, setBatchRecording] = useState(false);
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string>("");
@@ -524,14 +629,19 @@ export default function Marqad() {
   // Load history + usage on mount
   useEffect(() => {
     // Load from localStorage first (instant, offline-capable)
-    setHistory(loadHistory());
+    const localHistory = loadHistory();
+    setHistory(localHistory);
     // Then load from database (authoritative, cross-device)
-    // Always sync — even if DB returns empty (clears stale localStorage data)
+    // On success, sync DB → localStorage. On failure, keep localStorage.
     loadHistoryFromDB().then((dbHistory) => {
-      setHistory(dbHistory);
-      try {
-        localStorage.setItem("marqad-history", JSON.stringify(dbHistory));
-      } catch {}
+      // Only overwrite localStorage if DB returned data OR localStorage
+      // is also empty. This prevents a DB outage from wiping local history.
+      if (dbHistory.length > 0 || localHistory.length === 0) {
+        setHistory(dbHistory);
+        try {
+          localStorage.setItem("marqad-history", JSON.stringify(dbHistory));
+        } catch {}
+      }
     }).catch(() => {
       // DB unreachable — keep localStorage data as fallback
     });
@@ -1212,8 +1322,8 @@ export default function Marqad() {
       return;
     }
 
-    // Branch: batch mode vs live mode
-    if (recordingMode === "batch") {
+    // Branch: batch mode vs live mode (batch-melia uses the same batch flow)
+    if (recordingMode === "batch" || recordingMode === "batch-melia") {
       // Batch mode — record locally, no WebSocket
       if (viewingRecord) {
         setViewingRecord(null);
@@ -2009,11 +2119,12 @@ export default function Marqad() {
       if (!batchJwt) throw new Error(`No JWT in token response: ${JSON.stringify(tokenData)}`);
       console.log("[Marqad] Batch: token acquired");
 
-      // Step 2: Build batch config — different from realtime config
+      // Step 2: Build batch config — model depends on recording mode
+      const batchModel: BatchModel = recordingMode === "batch-melia" ? "melia-1" : "enhanced";
       const cache = loadVocabCache();
       const extraVocab = cache?.vocab;
-      const batchConfigJson = buildBatchConfig(extraVocab);
-      console.log("[Marqad] Batch: config built");
+      const batchConfigJson = buildBatchConfig(extraVocab, batchModel);
+      console.log("[Marqad] Batch: config built, model:", batchModel);
 
       // Step 3: Convert webm to WAV — the Batch API does NOT support webm.
       setBatchStatus("Converting audio to WAV...");
@@ -2116,15 +2227,33 @@ export default function Marqad() {
             setBatchStatus("Fetching transcript...");
             console.log("[Marqad] Batch: job done, fetching transcript");
 
-            // Fetch transcript (txt format for simplicity)
+            // Fetch transcript — JSON for Enhanced (to get per-word confidence),
+            // txt for Melia (no confidence scores available on Melia 1)
+            const fetchFormat = batchModel === "melia-1" ? "txt" : "json";
             const transcriptResp = await fetch(
-              `${CONFIG.BATCH_API_HOST}/jobs/${jobId}/transcript?format=txt`,
+              `${CONFIG.BATCH_API_HOST}/jobs/${jobId}/transcript?format=${fetchFormat}`,
               { headers: { "Authorization": `Bearer ${batchJwt}` } }
             );
 
             console.log("[Marqad] Batch: transcript response:", transcriptResp.status, transcriptResp.statusText);
             if (!transcriptResp.ok) throw new Error(`Could not fetch transcript (HTTP ${transcriptResp.status})`);
-            const transcriptText = await transcriptResp.text();
+
+            let transcriptText = "";
+            let batchWords: BatchWordResult[] | undefined;
+
+            if (fetchFormat === "json") {
+              // Enhanced model — parse JSON to extract per-word confidence scores
+              const transcriptJson = await transcriptResp.json();
+              const parsed = parseBatchTranscriptJSON(transcriptJson);
+              transcriptText = parsed.transcriptText;
+              batchWords = parsed.words;
+              console.log("[Marqad] Batch: JSON parsed, words:", batchWords.length,
+                "low-confidence:", batchWords.filter(w => isLowConfidence(w.confidence)).length);
+            } else {
+              // Melia model — plain text, no confidence scores
+              transcriptText = await transcriptResp.text();
+            }
+
             console.log("[Marqad] Batch: transcript received, length:", transcriptText.length, "chars");
             console.log("[Marqad] Batch: transcript preview:", transcriptText.slice(0, 200));
 
@@ -2141,6 +2270,8 @@ export default function Marqad() {
               segmentCount: 0,
               preview: transcriptText.slice(0, 120).replace(/\n/g, " "),
               exportText: transcriptText,
+              batchModel,
+              batchWords,
             };
             const updated = saveSession(record);
             setHistory(updated);
@@ -2208,7 +2339,7 @@ export default function Marqad() {
       // Show the error in the main content area, not just the rail status
       setBatchError(err.message);
     }
-  }, [releaseWakeLock, stopLocalRecording]);
+  }, [releaseWakeLock, stopLocalRecording, recordingMode]);
 
   // ============================================================
   // Audio download / save
@@ -2288,7 +2419,112 @@ export default function Marqad() {
     setViewingEditMode(false);
     setHistoryOpen(false);
     setPartial("");
+    // Reset transcript source — default to reconciled if it exists, else speechmatics
+    setTranscriptSource(record.reconciledTranscript ? "reconciled" : "speechmatics");
+    setAiReasoningError(null);
+    setReconcileError(null);
   }, []);
+
+  // ============================================================
+  // Phase 2: AI reasoning + reconciliation handlers
+  // ============================================================
+
+  // Get the audio blob for a session — from IndexedDB if saved, or in-memory
+  // if it's the current session. Returns null if audio isn't available.
+  const getSessionAudio = useCallback(async (sessionId: string): Promise<Blob | null> => {
+    // Check in-memory blob first (current session)
+    if (audioBlob && viewingRecord?.id === sessionId) return audioBlob;
+    // Check IndexedDB
+    try {
+      return await getAudioFromDB(sessionId);
+    } catch {
+      return null;
+    }
+  }, [audioBlob, viewingRecord]);
+
+  // Run AI reasoning pass — Gemini listens to the audio and produces an
+  // independent transcript. Explicit user action only, never automatic.
+  const handleRunAiReasoning = useCallback(async () => {
+    if (!viewingRecord) return;
+    setAiReasoningLoading(true);
+    setAiReasoningError(null);
+    try {
+      const audio = await getSessionAudio(viewingRecord.id);
+      if (!audio) {
+        setAiReasoningError("Audio not saved for this session. Save the audio first.");
+        return;
+      }
+      const result = await runAiReasoningTranscribe(audio);
+      // Update the viewing record with the AI reasoning transcript
+      const updated: SessionRecord = {
+        ...viewingRecord,
+        aiReasoningTranscript: result.transcript,
+        aiReasoningAt: new Date().toISOString(),
+      };
+      setViewingRecord(updated);
+      // Persist to localStorage + DB
+      const hist = saveSession(updated);
+      setHistory(hist);
+      saveSessionToDB(updated).catch(() => {});
+      // Switch to showing the Gemini transcript
+      setTranscriptSource("gemini");
+    } catch (err: any) {
+      console.error("[Marqad] AI reasoning failed:", err);
+      setAiReasoningError(err.message || "AI reasoning failed");
+    } finally {
+      setAiReasoningLoading(false);
+    }
+  }, [viewingRecord, getSessionAudio]);
+
+  // Reconcile transcripts — sends audio + both transcripts + vocab corrections
+  // to Gemini to produce a merged version. Only available when both source
+  // transcripts exist. Explicit user action only.
+  const handleReconcile = useCallback(async () => {
+    if (!viewingRecord) return;
+    if (!viewingRecord.aiReasoningTranscript) {
+      setReconcileError("Run the AI reasoning pass first — reconciliation needs both transcripts.");
+      return;
+    }
+    setReconcileLoading(true);
+    setReconcileError(null);
+    try {
+      const audio = await getSessionAudio(viewingRecord.id);
+      if (!audio) {
+        setReconcileError("Audio not saved for this session. Save the audio first.");
+        return;
+      }
+      // Build vocab corrections list from the cache
+      const cache = loadVocabCache();
+      const vocabCorrections = (cache?.vocab || []).map((v) => ({
+        wrongText: v.content,
+        correctText: v.content,
+      }));
+      const result = await runReconcileTranscript(
+        audio,
+        viewingRecord.exportText,           // Transcript A: Speechmatics
+        viewingRecord.aiReasoningTranscript, // Transcript B: Gemini
+        vocabCorrections
+      );
+      // Update the viewing record with the reconciled transcript
+      const updated: SessionRecord = {
+        ...viewingRecord,
+        reconciledTranscript: result.transcript,
+        reconciledAt: new Date().toISOString(),
+      };
+      setViewingRecord(updated);
+      // Persist to localStorage + DB
+      const hist = saveSession(updated);
+      setHistory(hist);
+      saveSessionToDB(updated).catch(() => {});
+      // Switch to showing the reconciled transcript
+      setTranscriptSource("reconciled");
+    } catch (err: any) {
+      console.error("[Marqad] Reconciliation failed:", err);
+      setReconcileError(err.message || "Reconciliation failed");
+    } finally {
+      setReconcileLoading(false);
+    }
+  }, [viewingRecord, getSessionAudio]);
 
   // Start a new session — clears the current transcript
   const handleNewSession = useCallback(() => {
@@ -2383,16 +2619,23 @@ export default function Marqad() {
               <button
                 className={`mode-btn ${recordingMode === "live" ? "active" : ""}`}
                 onClick={() => setRecordingMode("live")}
-                title="Live: see the transcript as you speak"
+                title="Live: see the transcript as you speak. Confidence flagging marks low-confidence words, but confidently-wrong substitutions won't be caught."
               >
                 Live
               </button>
               <button
                 className={`mode-btn ${recordingMode === "batch" ? "active" : ""}`}
                 onClick={() => setRecordingMode("batch")}
-                title="Record & transcribe after: no live preview, typically more accurate"
+                title="Record & transcribe after (Enhanced model): no live preview, uses custom vocabulary + confidence flagging. Best for known terms."
               >
-                Record &amp; after
+                Rec &amp; after
+              </button>
+              <button
+                className={`mode-btn ${recordingMode === "batch-melia" ? "active" : ""}`}
+                onClick={() => setRecordingMode("batch-melia")}
+                title="Record & transcribe after (Melia 1 model): best language-switch accuracy, but no custom vocabulary, no confidence scores, no find-and-replace corrections."
+              >
+                Rec (Melia)
               </button>
             </div>
           )}
@@ -2731,8 +2974,68 @@ export default function Marqad() {
                 {new Date(viewingRecord.date).toLocaleString()} ·{" "}
                 {Math.round(viewingRecord.durationSec / 60)} min ·{" "}
                 {viewingRecord.segmentCount} segments
+                {viewingRecord.batchModel && (
+                  <span className="viewing-model-tag"> · {viewingRecord.batchModel === "melia-1" ? "Melia 1" : "Enhanced"}</span>
+                )}
                 {editDirty && <span className="edit-dirty"> · unsaved</span>}
               </div>
+
+              {/* Phase 2: Transcript source switcher + AI actions */}
+              <div className="transcript-source-bar">
+                <div className="transcript-source-tabs">
+                  <button
+                    className={`transcript-source-btn ${transcriptSource === "speechmatics" ? "active" : ""}`}
+                    onClick={() => setTranscriptSource("speechmatics")}
+                  >
+                    Speechmatics
+                  </button>
+                  {viewingRecord.aiReasoningTranscript && (
+                    <button
+                      className={`transcript-source-btn ${transcriptSource === "gemini" ? "active" : ""}`}
+                      onClick={() => setTranscriptSource("gemini")}
+                    >
+                      Gemini
+                    </button>
+                  )}
+                  {viewingRecord.reconciledTranscript && (
+                    <button
+                      className={`transcript-source-btn ${transcriptSource === "reconciled" ? "active" : ""}`}
+                      onClick={() => setTranscriptSource("reconciled")}
+                    >
+                      Reconciled
+                    </button>
+                  )}
+                </div>
+                <div className="transcript-actions">
+                  <button
+                    className="transcript-action-btn"
+                    onClick={handleRunAiReasoning}
+                    disabled={aiReasoningLoading || reconcileLoading}
+                    title={`Run Gemini 3.1 Pro AI reasoning pass (~$${GEMINI_COST_PER_HOUR_STANDARD.toFixed(2)}/hour). Requires saved audio.`}
+                  >
+                    {aiReasoningLoading ? "Listening…" : "Run AI reasoning"}
+                  </button>
+                  <button
+                    className="transcript-action-btn"
+                    onClick={handleReconcile}
+                    disabled={reconcileLoading || aiReasoningLoading || !viewingRecord.aiReasoningTranscript}
+                    title={
+                      !viewingRecord.aiReasoningTranscript
+                        ? "Run AI reasoning first — reconciliation needs both transcripts"
+                        : `Reconcile Speechmatics + Gemini transcripts using audio (~$${GEMINI_COST_PER_HOUR_STANDARD.toFixed(2)}/hour). Requires saved audio.`
+                    }
+                  >
+                    {reconcileLoading ? "Reconciling…" : "Reconcile"}
+                  </button>
+                </div>
+              </div>
+
+              {(aiReasoningError || reconcileError) && (
+                <div className="transcript-action-error">
+                  {aiReasoningError || reconcileError}
+                </div>
+              )}
+
               {viewingEditMode ? (
                 <textarea
                   className="edit-transcript"
@@ -2744,6 +3047,31 @@ export default function Marqad() {
                   spellCheck={false}
                   autoFocus
                 />
+              ) : transcriptSource === "gemini" && viewingRecord.aiReasoningTranscript ? (
+                /* Gemini AI reasoning transcript */
+                <div className="viewing-text">
+                  {viewingRecord.aiReasoningTranscript.split("\n").map((line, i) => (
+                    <div key={i} className="viewing-line">
+                      <span dir={isArabicText(line) ? "rtl" : "ltr"}>{line}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : transcriptSource === "reconciled" && viewingRecord.reconciledTranscript ? (
+                /* Reconciled transcript — the most evidence-grounded version */
+                <div className="viewing-text">
+                  {viewingRecord.reconciledTranscript.split("\n").map((line, i) => (
+                    <div key={i} className="viewing-line">
+                      <span dir={isArabicText(line) ? "rtl" : "ltr"}>{line}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : viewingRecord.batchWords && viewingRecord.batchWords.length > 0 && transcriptSource === "speechmatics" ? (
+                /* Batch Enhanced — render with confidence flagging */
+                <div className="viewing-text">
+                  <div className="viewing-line">
+                    <span>{renderBatchWords(viewingRecord.batchWords)}</span>
+                  </div>
+                </div>
               ) : (
                 <div className="viewing-text">
                   {editText.split("\n").map((line, i) => (
@@ -2794,6 +3122,16 @@ export default function Marqad() {
                   <div className="empty-state-hint">
                     Arabic-English bilingual · Speaker diarization · Live transcription
                   </div>
+                  {recordingMode === "live" && (
+                    <div className="empty-state-hint" style={{ marginTop: "6px", opacity: 0.7 }}>
+                      Low-confidence words flagged with red-orange underline · confidently-wrong words won't be caught
+                    </div>
+                  )}
+                  {recordingMode === "batch-melia" && (
+                    <div className="empty-state-hint" style={{ marginTop: "6px", opacity: 0.7 }}>
+                      Melia 1: best language-switch accuracy · no custom vocabulary or confidence flagging
+                    </div>
+                  )}
                 </div>
               )}
 

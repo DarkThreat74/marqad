@@ -55,8 +55,12 @@
 
 html, body {
   height: 100%;
-  background: var(--ink);
-  color: var(--paper);
+  /* Body is paper-warm (light) so that even if .page-scroll's background
+     ever fails to cover the viewport (mobile dvh resize, flex edge cases),
+     text can never render on black. The .rail has its own --ink background
+     to stay dark. */
+  background: var(--paper-warm);
+  color: var(--paper-text);
   font-family: var(--font-chrome);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -73,6 +77,9 @@ html, body {
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
+  /* Paper-warm fallback so the area below the rail is never black,
+     even during mobile viewport resize transitions. */
+  background: var(--paper-warm);
 }
 
 /* ============================================================
@@ -522,7 +529,17 @@ html, body {
   -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
   display: flex;
   justify-content: center;
-  background: var(--ink);
+  /* flex-start (not the default stretch) so the .page item sizes to its
+     content and grows beyond the viewport. With stretch, the item is pinned
+     to the scroll container's visible height, so overflowing transcript text
+     paints over the black --ink background instead of the paper background. */
+  align-items: flex-start;
+  /* Bulletproof: the scroll field itself is paper-warm so that even if the
+     .page box ever fails to grow to its full content height (a flexbox
+     edge case that has proven hard to fully eliminate across browsers),
+     text can never render on a black background. The .page sits on top
+     with its own gradient + box-shadow for definition. */
+  background: var(--paper-warm) !important;
   position: relative;
 }
 
@@ -530,15 +547,15 @@ html, body {
   width: 8px;
 }
 .page-scroll::-webkit-scrollbar-track {
-  background: var(--ink);
+  background: var(--paper-warm);
 }
 .page-scroll::-webkit-scrollbar-thumb {
-  background: var(--ink-border);
+  background: var(--paper-faint);
   border-radius: 4px;
-  border: 2px solid var(--ink);
+  border: 2px solid var(--paper-warm);
 }
 .page-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--ink-border-light);
+  background: var(--paper-muted);
 }
 
 .page {
@@ -552,8 +569,14 @@ html, body {
   font-size: 18px;
   line-height: 1.75;
   padding-bottom: 60px;
-  box-shadow: 0 0 40px rgba(0, 0, 0, 0.3);
+  /* Stronger shadow so the page reads as a distinct document floating on
+     the paper-warm scroll field (which replaced the former black desk). */
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
   position: relative;
+  /* Establish a block formatting context so child margins (e.g. from
+     segments/dividers) are contained within .page and never collapse out,
+     which would make the box shorter than its visible content. */
+  display: flow-root;
   /* Use background gradient directly instead of ::before
      so it always covers the full height of content */
   background-image: linear-gradient(180deg, var(--paper) 0%, var(--paper-warm) 100%);
@@ -644,6 +667,17 @@ html, body {
 
 .uncertain {
   border-bottom: 1px dotted var(--amber);
+  text-decoration: none;
+  padding-bottom: 1px;
+  cursor: help;
+}
+
+/* Low-confidence flag (Phase 1.1) — distinct from .uncertain.
+   .uncertain = phonetic heuristic flagged this as a guess (amber dotted).
+   .low-confidence = the model's own confidence score was low (red-orange dotted).
+   A confidently-wrong word will have neither flag. */
+.low-confidence {
+  border-bottom: 1px dotted #e85d3a;
   text-decoration: none;
   padding-bottom: 1px;
   cursor: help;
@@ -1438,6 +1472,89 @@ html, body {
 .edit-dirty {
   color: var(--amber);
   font-weight: 500;
+}
+
+.viewing-model-tag {
+  color: var(--teal);
+  font-weight: 500;
+}
+
+/* Phase 2: Transcript source switcher + AI actions */
+.transcript-source-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(107, 114, 128, 0.15);
+}
+
+.transcript-source-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.transcript-source-btn {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  color: var(--paper-muted);
+  background: transparent;
+  border: 1px solid rgba(107, 114, 128, 0.2);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.transcript-source-btn:hover {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.transcript-source-btn.active {
+  background: var(--teal);
+  color: #fff;
+  border-color: var(--teal);
+}
+
+.transcript-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.transcript-action-btn {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  color: var(--paper-text);
+  background: transparent;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.transcript-action-btn:hover:not(:disabled) {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.transcript-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.transcript-action-error {
+  font-family: var(--font-chrome);
+  font-size: 11px;
+  color: #e85d3a;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  background: rgba(232, 93, 58, 0.08);
+  border-radius: 4px;
 }
 
 /* Read-only viewing mode — styled like the live transcript */
