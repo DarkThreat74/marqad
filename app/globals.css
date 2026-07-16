@@ -72,6 +72,7 @@ html, body {
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
+  overflow: hidden;
 }
 
 /* ============================================================
@@ -516,6 +517,7 @@ html, body {
 
 .page-scroll {
   flex: 1;
+  min-height: 0; /* Critical for flex children to scroll properly */
   overflow-y: auto;
   display: flex;
   justify-content: center;
@@ -548,7 +550,7 @@ html, body {
   font-family: var(--font-body);
   font-size: 18px;
   line-height: 1.75;
-  padding-bottom: 140px;
+  padding-bottom: 60px;
   box-shadow: 0 0 40px rgba(0, 0, 0, 0.3);
   position: relative;
   /* Use background gradient directly instead of ::before

@@ -1849,12 +1849,13 @@ export default function Marqad() {
     setBatchRecording(false);
     setBatchProcessing(true);
     setRecState("processing");
-    setBatchStatus("Uploading audio to Speechmatics...");
+    setBatchStatus("Preparing audio...");
 
     try {
       if (!audioBlob) throw new Error("No audio recorded — microphone may not be available");
 
       // Step 1: Get a batch JWT from the Edge Function
+      setBatchStatus("Authenticating with Speechmatics...");
       console.log("[Marqad] Batch: fetching batch token from", CONFIG.BATCH_TOKEN_ENDPOINT);
       const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
       console.log("[Marqad] Batch: token response:", tokenResp.status, tokenResp.statusText);
@@ -1868,26 +1869,23 @@ export default function Marqad() {
       console.log("[Marqad] Batch: token acquired");
 
       // Step 2: Build batch config — different from realtime config
-      // (no enable_partials, no max_delay, no conversation_config)
       const cache = loadVocabCache();
       const extraVocab = cache?.vocab;
       const batchConfigJson = buildBatchConfig(extraVocab);
       console.log("[Marqad] Batch: config built");
 
       // Step 3: Convert webm to WAV — the Batch API does NOT support webm.
-      // Supported formats: wav, mp3, aac, ogg, mpeg, amr, m4a, mp4, flac.
-      // WAV (16-bit PCM) is the optimal format — no transcoding needed server-side.
-      setBatchStatus("Converting audio to WAV for Speechmatics...");
+      setBatchStatus("Converting audio to WAV...");
       console.log("[Marqad] Batch: converting webm to WAV, input size:", audioBlob.size);
       const wavBlob = await webmToWav(audioBlob);
       console.log("[Marqad] Batch: WAV converted, size:", wavBlob.size);
 
       // Step 4: Create batch job — upload WAV to Speechmatics
+      setBatchStatus("Uploading audio to Speechmatics...");
       const formData = new FormData();
       formData.append("data_file", wavBlob, "recording.wav");
       formData.append("config", batchConfigJson);
 
-      setBatchStatus("Submitting to Speechmatics Batch API...");
       console.log("[Marqad] Batch: submitting job to", `${CONFIG.BATCH_API_HOST}/jobs/`);
 
       const jobResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/`, {
@@ -1917,12 +1915,12 @@ export default function Marqad() {
       batchJobIdRef.current = jobId;
       console.log("[Marqad] Batch: job created, ID:", jobId);
 
-      // Step 4: Poll job status every 2 seconds
+      // Step 5: Poll job status every 2 seconds
       // The Batch API has a fixed overhead (~10-15s) for job setup and model
       // loading, even for very short audio. Poll every 2s so short recordings
       // are detected as done as soon as possible.
       // Timeout after 15 minutes to avoid infinite polling.
-      setBatchStatus("Processing transcript...");
+      setBatchStatus("Speechmatics is loading the transcription model...");
 
       const pollStartTime = Date.now();
       const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
@@ -1953,7 +1951,19 @@ export default function Marqad() {
           const status = statusData.job?.status;
           const elapsed = Math.round((Date.now() - pollStartTime) / 1000);
           console.log(`[Marqad] Batch: job status: ${status} (${elapsed}s)`);
-          setBatchStatus(`Processing transcript... ${elapsed}s elapsed`);
+
+          // Show descriptive status messages so the user knows what's happening
+          if (status === "running") {
+            if (elapsed < 5) {
+              setBatchStatus("Loading transcription model...");
+            } else if (elapsed < 15) {
+              setBatchStatus(`Transcribing audio... ${elapsed}s`);
+            } else {
+              setBatchStatus(`Still transcribing... ${elapsed}s elapsed`);
+            }
+          } else if (status === "queued") {
+            setBatchStatus(`Waiting in queue... ${elapsed}s`);
+          }
 
           if (status === "done") {
             // Stop polling
