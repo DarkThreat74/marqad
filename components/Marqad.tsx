@@ -774,12 +774,14 @@ export default function Marqad() {
           teardown();
           console.error("Speechmatics config error:", JSON.stringify(msg));
         } else {
-          // Show the actual error from Speechmatics for debugging
+          // Any other error — stop reconnection, reset state, show the error
           const errDetail = msg.reason || msg.message || msg.type || "unknown";
+          console.error("[Marqad] Speechmatics error:", JSON.stringify(msg));
           setStatusText(`Speechmatics error: ${errDetail}`);
           setStatusKind("error");
-          // Log full error to console for debugging
-          console.error("Speechmatics error:", JSON.stringify(msg));
+          shouldReconnectRef.current = false;
+          setRecState("idle");
+          teardown();
         }
         break;
     }
@@ -808,7 +810,10 @@ export default function Marqad() {
       // Speechmatics' auto-punctuation (which inserts false periods)
       if (type === "punctuation") continue;
 
-      words.push({ content, speaker, language, direction, confidence, type });
+      // Entities (dates, numbers, currencies) are treated as words —
+      // enable_entities gives us formatted output like "2004" instead of
+      // "two thousand and four", which is ideal for note-taking.
+      words.push({ content, speaker, language, direction, confidence, type: type === "entity" ? "word" : type });
 
       if (type === "word" && speaker !== "UU") {
         primarySpeaker = speaker;
@@ -1064,10 +1069,8 @@ export default function Marqad() {
         shouldReconnectRef.current = false;
       } else {
         // shouldReconnectRef is false — Error handler already set the error message.
-        // But make sure we're not stuck in "connecting" state.
-        if (recState !== "idle") {
-          setRecState("idle");
-        }
+        // Always reset to idle — don't check recState (it's a stale closure value).
+        setRecState("idle");
       }
     };
 
@@ -1079,18 +1082,21 @@ export default function Marqad() {
   // ============================================================
 
   const armStart = useCallback(() => {
-    if (recState !== "idle") return;
+    if (recStateRef.current !== "idle") return;
     setArmed(true);
     // Auto-disarm after 4 seconds if not confirmed
     if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     armedTimerRef.current = setTimeout(() => setArmed(false), 4000);
-  }, [recState]);
+  }, []);
 
   const confirmStart = useCallback(async () => {
     if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     setArmed(false);
 
-    if (recState !== "idle") return;
+    // Use ref to avoid stale closure — recState in the dependency array
+    // causes confirmStart to be recreated on every state change, but the
+    // click handler might still reference an older version.
+    if (recStateRef.current !== "idle") return;
 
     // Block start if offline
     if (!navigator.onLine) {
@@ -1252,14 +1258,14 @@ export default function Marqad() {
       shouldReconnectRef.current = false;
       teardown();
     }
-  }, [recState, connectWebSocket, viewingRecord, recordingMode]);
+  }, [connectWebSocket, viewingRecord, recordingMode]);
 
   // ============================================================
   // Pause / Resume
   // ============================================================
 
   const pauseRecording = useCallback(() => {
-    if (recState !== "recording") return;
+    if (recStateRef.current !== "recording") return;
     isPausedRef.current = true;
     setRecState("paused");
     setStatusText("Paused");
@@ -1269,10 +1275,10 @@ export default function Marqad() {
     if (sourceNodeRef.current) {
       try { sourceNodeRef.current.disconnect(); } catch {}
     }
-  }, [recState]);
+  }, []);
 
   const resumeRecording = useCallback(() => {
-    if (recState !== "paused") return;
+    if (recStateRef.current !== "paused") return;
     isPausedRef.current = false;
 
     // Reconnect source node to resume audio capture
@@ -1302,7 +1308,7 @@ export default function Marqad() {
     }
 
     setRecState("recording");
-  }, [recState, connectWebSocket]);
+  }, [connectWebSocket]);
 
   // ============================================================
   // Stop + teardown

@@ -25,8 +25,9 @@ export const CONFIG = {
   BATCH_API_HOST: "https://us1.asr.api.speechmatics.com/v2",
   LANGUAGE: "ar_en",
   SAMPLE_RATE: 16000,
-  MAX_DELAY: 1.5, // balance accuracy and live responsiveness — lower delay means
-                  // faster finalization when switching between Arabic and English
+  MAX_DELAY: 2.0, // balance accuracy and live responsiveness — 2s gives the model
+                  // enough lookahead for smart formatting and punctuation without
+                  // excessive delay when switching between Arabic and English
   AUDIO_CHUNK_SIZE: 2048, // smaller chunks = lower latency
 };
 
@@ -414,8 +415,12 @@ export function buildStartRecognition(extraVocab?: Array<{ content: string; soun
       conversation_config: {
         end_of_utterance_silence_trigger: 1.5,
       },
+      // Enable smart formatting — dates, numbers, currencies, etc.
+      // Essential for a note-taking machine: "two thousand and four" → "2004"
+      enable_entities: true,
       punctuation_overrides: {
-        permitted_marks: [],
+        permitted_marks: "all",
+        sensitivity: 0.6,
       },
       transcript_filtering_config: {
         replacements: [
