@@ -601,7 +601,7 @@ export async function runAiReasoningTranscribe(
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: "Unknown error" }));
-    throw new Error(err.detail || err.error || `Gemini API error (HTTP ${resp.status})`);
+    throw new Error(err.error || err.detail || `Gemini API error (HTTP ${resp.status})`);
   }
   const data = await resp.json();
   return { transcript: data.transcript, usage: data.usage };
@@ -632,7 +632,7 @@ export async function runReconcileTranscript(
   });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ error: "Unknown error" }));
-    throw new Error(err.detail || err.error || `Gemini API error (HTTP ${resp.status})`);
+    throw new Error(err.error || err.detail || `Gemini API error (HTTP ${resp.status})`);
   }
   const data = await resp.json();
   return { transcript: data.transcript, usage: data.usage };

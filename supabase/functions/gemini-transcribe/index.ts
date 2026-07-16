@@ -35,9 +35,12 @@ serve(async (req) => {
     );
   }
 
-  if (!GEMINI_API_KEY) {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === "your-key-from-ai.google.dev" || GEMINI_API_KEY.startsWith("your-")) {
     return new Response(
-      JSON.stringify({ error: "Server missing GEMINI_API_KEY secret" }),
+      JSON.stringify({
+        error: "Gemini API key not configured",
+        detail: "The GEMINI_API_KEY secret is missing or still set to a placeholder. Get a real key from https://aistudio.google.com/apikey, then run: supabase secrets set GEMINI_API_KEY=<your-real-key>, and redeploy the gemini-transcribe function."
+      }),
       { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
     );
   }
@@ -118,8 +121,17 @@ Output only the reconciled transcript.`;
     if (!geminiResp.ok) {
       const errText = await geminiResp.text();
       console.error("[gemini-transcribe] Gemini API error:", geminiResp.status, errText);
+
+      // Provide user-friendly messages for common auth errors
+      let friendlyError = "Gemini API request failed";
+      if (geminiResp.status === 401 || geminiResp.status === 403) {
+        friendlyError = "Gemini API key is invalid or expired. Get a new key from https://aistudio.google.com/apikey and update it with: supabase secrets set GEMINI_API_KEY=<your-key>";
+      } else if (geminiResp.status === 429) {
+        friendlyError = "Gemini API rate limit reached. Wait a moment and try again.";
+      }
+
       return new Response(
-        JSON.stringify({ error: "Gemini API request failed", detail: errText, status: geminiResp.status }),
+        JSON.stringify({ error: friendlyError, detail: errText, status: geminiResp.status }),
         { status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
