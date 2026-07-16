@@ -121,20 +121,26 @@ serve(async (req) => {
         .from("marqad_sessions")
         .select("audio_path")
         .eq("id", sessionId)
+        .eq("user_id", USER_ID)
         .single();
 
-      // Delete audio from storage if it exists
+      // Delete audio from storage if it exists (best-effort — don't block
+      // DB deletion if storage fails, as that would leave orphaned DB records)
       if (session?.audio_path) {
-        await supabase.storage
+        const { error: storageErr } = await supabase.storage
           .from("marqad-audio")
           .remove([session.audio_path]);
+        if (storageErr) {
+          console.warn("[marqad-sessions] Storage deletion failed:", storageErr.message);
+        }
       }
 
       // Delete the session record
       const { error } = await supabase
         .from("marqad_sessions")
         .delete()
-        .eq("id", sessionId);
+        .eq("id", sessionId)
+        .eq("user_id", USER_ID);
 
       if (error) throw error;
 

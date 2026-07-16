@@ -29,14 +29,13 @@ import {
   addToMonthlySeconds,
   addToMonthlySecondsDB,
   loadMonthlySecondsFromDB,
-  loadMonthlySeconds,
   exportHistoryJSON,
   importHistoryJSON,
   saveSessionToDB,
   loadHistoryFromDB,
   deleteSessionFromDB,
 } from "@/lib/marqad";
-import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, uploadAudioToStorage, getAudioUrl } from "@/lib/audio";
+import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, uploadAudioToStorage } from "@/lib/audio";
 
 // ============================================================
 // Memoized segment view
@@ -463,8 +462,6 @@ export default function Marqad() {
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string>("");
   const [batchError, setBatchError] = useState<string | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const batchChunksRef = useRef<Blob[]>([]);
   const batchJobIdRef = useRef<string | null>(null);
   const batchPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -529,14 +526,14 @@ export default function Marqad() {
     // Load from localStorage first (instant, offline-capable)
     setHistory(loadHistory());
     // Then load from database (authoritative, cross-device)
+    // Always sync — even if DB returns empty (clears stale localStorage data)
     loadHistoryFromDB().then((dbHistory) => {
-      if (dbHistory.length > 0) {
-        setHistory(dbHistory);
-        // Also update localStorage cache
-        try {
-          localStorage.setItem("marqad-history", JSON.stringify(dbHistory));
-        } catch {}
-      }
+      setHistory(dbHistory);
+      try {
+        localStorage.setItem("marqad-history", JSON.stringify(dbHistory));
+      } catch {}
+    }).catch(() => {
+      // DB unreachable — keep localStorage data as fallback
     });
     // Load usage from database (async)
     loadMonthlySecondsFromDB().then(() => {
@@ -654,6 +651,7 @@ export default function Marqad() {
     return () => {
       teardown();
       if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+      if (batchPollRef.current) clearInterval(batchPollRef.current);
     };
   }, []);
 
@@ -1161,6 +1159,13 @@ export default function Marqad() {
   const stopLocalRecording = useCallback(async (): Promise<Blob | null> => {
     const recorder = localRecorderRef.current;
     if (!recorder) return null;
+    // Guard against double-call: if already stopped (e.g. teardown called
+    // recorder.stop() first), return null — the chunks are already lost.
+    if (recorder.state === "inactive") {
+      localRecorderRef.current = null;
+      localChunksRef.current = [];
+      return null;
+    }
 
     const blob = await new Promise<Blob | null>((resolve) => {
       recorder.onstop = () => {
@@ -1438,6 +1443,8 @@ export default function Marqad() {
     if (localRecorderRef.current && localRecorderRef.current.state !== "inactive") {
       try { localRecorderRef.current.stop(); } catch {}
     }
+    // Clear batch polling interval (in case teardown is called during batch processing)
+    if (batchPollRef.current) { clearInterval(batchPollRef.current); batchPollRef.current = null; }
     // Cancel animation frame
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
     // Release wake lock
@@ -1543,6 +1550,9 @@ export default function Marqad() {
           }
         }
       }
+    }).catch(() => {
+      // If stopLocalRecording fails, still teardown to clean up resources
+      teardown();
     });
   }, [stopLocalRecording, teardown]);
 
@@ -1564,39 +1574,48 @@ export default function Marqad() {
 
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
-
-    // Stop local recording and keep the audio blob for download
     const sessionId = `session-${Date.now()}`;
+
+    // Capture segments NOW — teardown will clear refs, and the async
+    // stopLocalRecording callback may run after refs are cleared.
+    const currentSegments = segmentsRef.current;
+
+    // Stop local recording FIRST, then teardown.
+    // teardown() calls recorder.stop() without collecting chunks, so if it
+    // runs before stopLocalRecording, the audio blob is lost.
     stopLocalRecording().then(async (blob) => {
+      teardown();
       if (blob) {
         setAudioBlob(blob);
         console.log("[Marqad] Local recording saved:", blob.size, "bytes");
         // Upload audio to Supabase Storage (cloud persistence)
         const audioPath = await uploadAudioToStorage(sessionId, blob);
-        if (audioPath) {
-          // Update the session record with the audio path
+        if (audioPath && currentSegments.length > 0) {
+          // Update the DB session record with the audio path
           saveSessionToDB({
             id: sessionId,
             date: new Date().toISOString(),
             durationSec: streamingSec,
-            segmentCount: segmentsRef.current.length,
-            preview: segmentsRef.current.map((s) => s.transcript).join(" ").slice(0, 120) || "(empty session)",
-            exportText: buildExportText(segmentsRef.current),
+            segmentCount: currentSegments.length,
+            preview: currentSegments.map((s) => s.transcript).join(" ").slice(0, 120) || "(empty session)",
+            exportText: buildExportText(currentSegments),
             audioPath,
             audioSize: blob.size,
           }).catch(() => {});
         }
       }
+    }).catch(() => {
+      // If stopLocalRecording fails, still teardown to clean up
+      teardown();
     });
 
-    teardown();
     setRecState("idle");
     setStatusText("Stopped");
     setStatusKind("idle");
     setPartial("");
 
-    // Save to history (localStorage + database)
-    const currentSegments = segmentsRef.current;
+    // Save to history (localStorage + database) — do this synchronously
+    // so the transcript appears immediately, even if audio upload is still pending
     if (currentSegments.length > 0) {
       const exportText = buildExportText(currentSegments);
       const preview = currentSegments
@@ -2173,6 +2192,11 @@ export default function Marqad() {
 
     } catch (err: any) {
       console.error("[Marqad] Batch: fatal error:", err);
+      // Clean up polling interval if it was started before the error
+      if (batchPollRef.current) {
+        clearInterval(batchPollRef.current);
+        batchPollRef.current = null;
+      }
       setBatchProcessing(false);
       setRecState("idle");
       setStatusKind("error");

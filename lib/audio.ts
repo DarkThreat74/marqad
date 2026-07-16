@@ -14,14 +14,16 @@ async function decodeAudio(blob: Blob): Promise<{ samples: Float32Array; sampleR
   const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
   await audioContext.close();
 
-  // Mix down to mono if needed
+  // Mix down to mono if needed (handles any number of channels)
   let samples: Float32Array;
   if (audioBuffer.numberOfChannels > 1) {
-    const channel1 = audioBuffer.getChannelData(0);
-    const channel2 = audioBuffer.getChannelData(1);
-    samples = new Float32Array(channel1.length);
-    for (let i = 0; i < channel1.length; i++) {
-      samples[i] = (channel1[i] + channel2[i]) / 2;
+    const length = audioBuffer.length;
+    samples = new Float32Array(length);
+    for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+      const data = audioBuffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        samples[i] += data[i] / audioBuffer.numberOfChannels;
+      }
     }
   } else {
     samples = audioBuffer.getChannelData(0);
@@ -254,7 +256,7 @@ export async function uploadAudioToStorage(
     const { error } = await client.storage
       .from("marqad-audio")
       .upload(path, blob, {
-        contentType: "audio/webm",
+        contentType: blob.type || "audio/webm",
         upsert: true,
       });
 
@@ -274,7 +276,8 @@ export async function uploadAudioToStorage(
 /**
  * Get a public URL for an audio file in Supabase Storage.
  */
-export function getAudioUrl(audioPath: string): string | null {
+export function getAudioUrl(audioPath: string | null | undefined): string | null {
+  if (!audioPath) return null;
   const client = getStorageClient();
   if (!client) return null;
 
