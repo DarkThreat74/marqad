@@ -527,8 +527,10 @@ export function buildStartRecognition(extraVocab?: Array<{ content: string; soun
       // Enable smart formatting — dates, numbers, currencies, etc.
       // Essential for a note-taking machine: "two thousand and four" → "2004"
       enable_entities: true,
+      // permitted_marks must be an array, NOT the string "all" —
+      // both Realtime and Batch APIs reject the string form.
+      // Omitting it defaults to all punctuation marks.
       punctuation_overrides: {
-        permitted_marks: "all",
         sensitivity: 0.6,
       },
       transcript_filtering_config: {
