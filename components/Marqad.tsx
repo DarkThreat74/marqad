@@ -458,6 +458,7 @@ export default function Marqad() {
   const [batchRecording, setBatchRecording] = useState(false);
   const [batchProcessing, setBatchProcessing] = useState(false);
   const [batchStatus, setBatchStatus] = useState<string>("");
+  const [batchError, setBatchError] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const batchChunksRef = useRef<Blob[]>([]);
   const batchJobIdRef = useRef<string | null>(null);
@@ -1758,6 +1759,7 @@ export default function Marqad() {
       // both the batch audio source AND the downloadable backup.
       setAudioBlob(null);
       setAudioSaved(false);
+      setBatchError(null);
       startLocalRecording(stream);
 
       setBatchRecording(true);
@@ -2010,9 +2012,12 @@ export default function Marqad() {
       setRecState("idle");
       setStatusKind("error");
       setStatusText(`Batch error: ${err.message}`);
-      // Keep the error message visible AND keep the audio blob available
-      // for download — the recording is NOT lost even if transcription failed.
+      // Keep the error message visible in the batch status area AND keep
+      // the audio blob available for download — the recording is NOT lost
+      // even if transcription failed.
       setBatchStatus(`Error: ${err.message}. You can still download the recording.`);
+      // Show the error in the main content area, not just the rail status
+      setBatchError(err.message);
     }
   }, [releaseWakeLock, stopLocalRecording]);
 
@@ -2105,6 +2110,7 @@ export default function Marqad() {
     setStatusKind("idle");
     setAudioBlob(null);
     setAudioSaved(false);
+    setBatchError(null);
   }, [recState, stopRecording]);
 
   // Save edited transcript as a new history entry
@@ -2442,7 +2448,30 @@ export default function Marqad() {
           ref={transcriptAreaRef}
           onMouseUp={handleTranscriptMouseUp}
         >
-          {batchRecording || batchProcessing ? (
+          {batchError ? (
+            /* ===== Batch error — show prominently so user knows what went wrong ===== */
+            <div className="batch-error-display">
+              <div className="batch-error-icon">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+              <div className="batch-error-title">Transcription Failed</div>
+              <div className="batch-error-detail">{batchError}</div>
+              {audioBlob && (
+                <div className="batch-error-actions">
+                  <button className="copy-btn" onClick={handleDownloadMp3} disabled={convertingMp3}>
+                    {convertingMp3 ? "Converting…" : "Download MP3"}
+                  </button>
+                  <button className="new-session-btn" onClick={handleNewSession}>
+                    + New Session
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : batchRecording || batchProcessing ? (
             /* ===== Batch mode: recording or processing ===== */
             <div className="batch-mode">
               {batchRecording ? (
