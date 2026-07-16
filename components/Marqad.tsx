@@ -499,6 +499,10 @@ export default function Marqad() {
   const acquireWakeLockRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const batchRecordingRef = useRef(false);
   const batchProcessingRef = useRef(false);
+  // Ref to auto-save function — set after all callbacks are defined.
+  // This lets handleWsMessage (defined early) call auto-save logic that
+  // depends on callbacks defined later (stopLocalRecording, etc.).
+  const autoSaveOnFailureRef = useRef<() => void>(() => {});
   const lastAudioEndRef = useRef<number | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
   const segIdCounter = useRef(0);
@@ -630,12 +634,18 @@ export default function Marqad() {
   // Auto-scroll — keep pinned to bottom when new content arrives
   useEffect(() => {
     const el = pageScrollRef.current;
-    if (el && isAtBottomRef.current) {
-      // Use requestAnimationFrame to ensure DOM is updated before scrolling
+    if (!el) return;
+    // Only auto-scroll if user is at/near the bottom (hasn't scrolled up to read)
+    if (!isAtBottomRef.current) return;
+    // Use double rAF to ensure DOM is fully painted before scrolling.
+    // Single rAF can fire before the browser updates scrollHeight on mobile.
+    requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
+        if (el && isAtBottomRef.current) {
+          el.scrollTop = el.scrollHeight;
+        }
       });
-    }
+    });
   }, [segments, partial]);
 
   // Cleanup on unmount
@@ -785,7 +795,7 @@ export default function Marqad() {
           setStatusKind("error");
           shouldReconnectRef.current = false;
           setRecState("idle");
-          teardown();
+          autoSaveOnFailureRef.current();
         } else if (msg.type === "invalid_config" || msg.type === "invalid_message" || msg.type === "invalid_language" || msg.type === "invalid_model") {
           // Fatal config errors — don't retry, show the actual reason
           const errDetail = msg.reason || msg.type || "invalid config";
@@ -793,7 +803,7 @@ export default function Marqad() {
           setStatusKind("error");
           shouldReconnectRef.current = false;
           setRecState("idle");
-          teardown();
+          autoSaveOnFailureRef.current();
           console.error("Speechmatics config error:", JSON.stringify(msg));
         } else {
           // Any other error — stop reconnection, reset state, show the error
@@ -803,7 +813,7 @@ export default function Marqad() {
           setStatusKind("error");
           shouldReconnectRef.current = false;
           setRecState("idle");
-          teardown();
+          autoSaveOnFailureRef.current();
         }
         break;
     }
@@ -1074,21 +1084,33 @@ export default function Marqad() {
       // Log close details for debugging
       console.warn(`[Marqad] WebSocket closed: code=${event.code}, reason="${event.reason}"`);
 
-      if (shouldReconnectRef.current && !isPausedRef.current && reconnectAttemptsRef.current < 4) {
-        const delays = [2000, 5000, 10000, 20000];
+      if (shouldReconnectRef.current && isPausedRef.current) {
+        // WS closed while paused (e.g. Speechmatics idle timeout after 3 min).
+        // Don't reconnect now — the resume function will handle that.
+        // IMPORTANT: keep recState as "paused" so the user can still resume.
+        // Setting it to "idle" here would make resumeRecording bail out.
+        // This check must come BEFORE the give-up check so that a high
+        // reconnect attempt count doesn't force-close a paused session.
+        console.log("[Marqad] WebSocket closed during pause — will reconnect on resume");
+      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current < 10) {
+        // Progressive backoff: 2s, 3s, 5s, 8s, 12s, 16s, 20s, 25s, 30s, 35s
+        // More attempts than before — long sessions (45+ min) need resilience
+        const delays = [2000, 3000, 5000, 8000, 12000, 16000, 20000, 25000, 30000, 35000];
         const delay = delays[reconnectAttemptsRef.current];
         reconnectAttemptsRef.current++;
-        setStatusText(`Reconnecting in ${delay / 1000}s... (${reconnectAttemptsRef.current}/4)`);
+        setStatusText(`Reconnecting in ${delay / 1000}s... (attempt ${reconnectAttemptsRef.current}/10)`);
         setStatusKind("connecting");
         reconnectTimerRef.current = setTimeout(() => {
           connectWebSocket();
         }, delay);
-      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 4) {
+      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 10) {
         const reason = event.reason ? `: ${event.reason}` : ` (code ${event.code})`;
-        setStatusText(`Connection failed${reason}`);
+        setStatusText(`Connection lost after 10 attempts${reason}. Saving transcript...`);
         setStatusKind("error");
         setRecState("idle");
         shouldReconnectRef.current = false;
+        // Auto-save transcript + audio, then teardown
+        autoSaveOnFailureRef.current();
       } else {
         // shouldReconnectRef is false — Error handler already set the error message.
         // Always reset to idle — don't check recState (it's a stale closure value).
@@ -1459,6 +1481,56 @@ export default function Marqad() {
     recognitionStartedRef.current = false;
     isPausedRef.current = false;
   }, []);
+
+  // ============================================================
+  // Auto-save on failure — called when WS dies or Speechmatics
+  // sends a fatal error. Stops local recording, tears down audio,
+  // and saves whatever transcript was captured so nothing is lost.
+  // Stored in a ref so handleWsMessage (defined earlier) can call it.
+  // ============================================================
+  const autoSaveOnFailure = useCallback(() => {
+    // Stop local recording FIRST (before teardown) so we can collect the blob.
+    // teardown() calls recorder.stop() without collecting chunks, which would
+    // lose the audio. We must grab the blob before teardown destroys the recorder.
+    stopLocalRecording().then(async (blob) => {
+      // Now stop everything — timer, audio nodes, media stream
+      teardown();
+      if (blob) setAudioBlob(blob);
+      // Auto-save whatever transcript we have so it's not lost
+      const currentSegments = segmentsRef.current;
+      if (currentSegments.length > 0) {
+        const sessionId = `session-${Date.now()}`;
+        const exportText = buildExportText(currentSegments);
+        const preview = currentSegments
+          .map((s) => s.transcript)
+          .join(" ")
+          .slice(0, 120);
+        const record: SessionRecord = {
+          id: sessionId,
+          date: new Date().toISOString(),
+          durationSec: sessionStreamingSecRef.current,
+          segmentCount: currentSegments.length,
+          preview: preview || "(empty session)",
+          exportText,
+        };
+        const updated = saveSession(record);
+        setHistory(updated);
+        saveSessionToDB(record).catch(() => {});
+        // Upload local recording if available
+        if (blob) {
+          const audioPath = await uploadAudioToStorage(sessionId, blob);
+          if (audioPath) {
+            saveSessionToDB({ ...record, audioPath, audioSize: blob.size }).catch(() => {});
+          }
+        }
+      }
+    });
+  }, [stopLocalRecording, teardown]);
+
+  // Keep the ref in sync so handleWsMessage can call it
+  useEffect(() => {
+    autoSaveOnFailureRef.current = autoSaveOnFailure;
+  }, [autoSaveOnFailure]);
 
   const stopRecording = useCallback(() => {
     // Batch mode: stop batch recording and submit for transcription
@@ -2223,8 +2295,10 @@ export default function Marqad() {
   const handleScroll = useCallback(() => {
     const el = pageScrollRef.current;
     if (!el) return;
-    // More generous threshold — if within 120px of bottom, treat as "at bottom"
-    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    // Generous threshold — if within 200px of bottom, treat as "at bottom".
+    // Large transcript chunks can add 100+px at once; a tight threshold would
+    // cause the auto-scroll to stop prematurely.
+    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
   }, []);
 
   // ============================================================

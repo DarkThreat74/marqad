@@ -519,6 +519,7 @@ html, body {
   flex: 1;
   min-height: 0; /* Critical for flex children to scroll properly */
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch; /* Smooth scrolling on iOS */
   display: flex;
   justify-content: center;
   background: var(--ink);
