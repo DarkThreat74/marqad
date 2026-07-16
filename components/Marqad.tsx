@@ -1841,10 +1841,13 @@ export default function Marqad() {
       console.log("[Marqad] Batch: fetching batch token from", CONFIG.BATCH_TOKEN_ENDPOINT);
       const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
       console.log("[Marqad] Batch: token response:", tokenResp.status, tokenResp.statusText);
-      if (!tokenResp.ok) throw new Error(`Could not get batch token (HTTP ${tokenResp.status})`);
+      if (!tokenResp.ok) {
+        const errText = await tokenResp.text().catch(() => "");
+        throw new Error(`Could not get batch token (HTTP ${tokenResp.status}): ${errText}`);
+      }
       const tokenData = await tokenResp.json();
       const batchJwt = tokenData.jwt;
-      if (!batchJwt) throw new Error("No batch JWT in response");
+      if (!batchJwt) throw new Error(`No JWT in token response: ${JSON.stringify(tokenData)}`);
       console.log("[Marqad] Batch: token acquired");
 
       // Step 2: Build batch config — different from realtime config
@@ -1874,7 +1877,13 @@ export default function Marqad() {
       if (!jobResp.ok) {
         const errText = await jobResp.text();
         console.error("[Marqad] Batch: job creation failed:", errText);
-        throw new Error(`Batch job creation failed (HTTP ${jobResp.status}): ${errText}`);
+        // Parse Speechmatics error response for a clean message
+        let cleanErr = errText;
+        try {
+          const errJson = JSON.parse(errText);
+          cleanErr = errJson.detail || errJson.error || errText;
+        } catch {}
+        throw new Error(`Speechmatics rejected the job (HTTP ${jobResp.status}): ${cleanErr}`);
       }
 
       const jobData = await jobResp.json();

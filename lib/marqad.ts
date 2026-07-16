@@ -398,8 +398,9 @@ export function buildBatchConfig(extraVocab?: Array<{ content: string; sounds_li
         prefer_current_speaker: true,
       },
       enable_entities: true,
+      // Batch API requires permitted_marks as an array, not the string "all".
+      // Omitting it entirely defaults to all punctuation marks.
       punctuation_overrides: {
-        permitted_marks: "all",
         sensitivity: 0.6,
       },
       transcript_filtering_config: {
