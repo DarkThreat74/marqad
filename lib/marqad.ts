@@ -400,10 +400,14 @@ export function buildStartRecognition(extraVocab?: Array<{ content: string; soun
       enable_partials: true,
       max_delay: CONFIG.MAX_DELAY,
       max_delay_mode: "flexible",
-      end_of_utterance_mode: "adaptive",
       diarization: "speaker",
       speaker_diarization_config: {
         prefer_current_speaker: true,
+      },
+      // End-of-utterance detection — valid raw API field (NOT the Voice SDK's
+      // end_of_utterance_mode). 1.5s silence = natural turn boundary.
+      conversation_config: {
+        end_of_utterance_silence_trigger: 1.5,
       },
       punctuation_overrides: {
         permitted_marks: [],

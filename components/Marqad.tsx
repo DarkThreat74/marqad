@@ -754,6 +754,15 @@ export default function Marqad() {
           shouldReconnectRef.current = false;
           setRecState("idle");
           teardown();
+        } else if (msg.type === "invalid_config" || msg.type === "invalid_message" || msg.type === "invalid_language" || msg.type === "invalid_model") {
+          // Fatal config errors — don't retry, show the actual reason
+          const errDetail = msg.reason || msg.type || "invalid config";
+          setStatusText(`Config error: ${errDetail}`);
+          setStatusKind("error");
+          shouldReconnectRef.current = false;
+          setRecState("idle");
+          teardown();
+          console.error("Speechmatics config error:", JSON.stringify(msg));
         } else {
           // Show the actual error from Speechmatics for debugging
           const errDetail = msg.reason || msg.message || msg.type || "unknown";
@@ -987,11 +996,14 @@ export default function Marqad() {
       setStatusKind("error");
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (wsRef.current === ws) {
         wsRef.current = null;
       }
       recognitionStartedRef.current = false;
+
+      // Log close details for debugging
+      console.warn(`WebSocket closed: code=${event.code}, reason="${event.reason}"`);
 
       if (shouldReconnectRef.current && !isPausedRef.current && reconnectAttemptsRef.current < 4) {
         const delays = [2000, 5000, 10000, 20000];
@@ -1003,7 +1015,8 @@ export default function Marqad() {
           connectWebSocket();
         }, delay);
       } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 4) {
-        setStatusText("Reconnection failed");
+        const reason = event.reason ? `: ${event.reason}` : "";
+        setStatusText(`Connection failed${reason}`);
         setStatusKind("error");
         setRecState("idle");
         shouldReconnectRef.current = false;
