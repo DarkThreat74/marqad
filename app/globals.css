@@ -1195,20 +1195,14 @@ html, body {
   :root {
     --rail-padding: 8px 10px;
     --page-padding: 20px 16px;
-    --rail-height: 56px;
+    --rail-height: auto;
   }
 
+  /* Two-row rail on mobile — no horizontal scrolling */
   .rail {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 6px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    -ms-overflow-style: none;
-  }
-
-  .rail::-webkit-scrollbar {
-    display: none;
+    overflow: visible;
   }
 
   .rail-brand-text {
@@ -1219,6 +1213,12 @@ html, body {
     width: 28px;
     height: 28px;
     font-size: 20px;
+  }
+
+  /* Row 1: brand + mic + waveform + status (left side) */
+  .rail-controls {
+    flex: 0 0 auto;
+    gap: 6px;
   }
 
   .waveform {
@@ -1235,14 +1235,20 @@ html, body {
     white-space: nowrap;
   }
 
-  .rail-right {
-    flex-shrink: 1;
-    gap: 4px;
+  /* Spacer becomes full-width to force row 2 onto a new line */
+  .rail-spacer {
+    flex: 1 1 100%;
     min-width: 0;
+    height: 0;
   }
 
-  .rail-spacer {
-    min-width: 8px;
+  /* Row 2: mode selector + right-side buttons */
+  .rail-right {
+    flex: 1 1 100%;
+    gap: 4px;
+    min-width: 0;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .usage-bar-track {
@@ -1275,6 +1281,21 @@ html, body {
     font-size: 10px;
     padding: 5px 8px;
     min-height: 30px;
+  }
+
+  .mode-selector {
+    flex: 0 0 auto;
+  }
+
+  .mode-btn {
+    padding: 5px 8px;
+    font-size: 10px;
+  }
+
+  .vocab-refresh-btn {
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
   }
 }
 
