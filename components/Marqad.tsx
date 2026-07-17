@@ -637,6 +637,9 @@ export default function Marqad() {
   // This lets handleWsMessage (defined early) call auto-save logic that
   // depends on callbacks defined later (stopLocalRecording, etc.).
   const autoSaveOnFailureRef = useRef<() => void>(() => {});
+  // Ref to processBatchTranscription — set after it's defined, so
+  // confirmSaveSession (defined earlier) can call it without a forward reference.
+  const processBatchTranscriptionRef = useRef<(blob: Blob, model: BatchModel, title: string) => Promise<void>>(async () => {});
   const lastAudioEndRef = useRef<number | null>(null);
   const lastWallTimeRef = useRef<number | null>(null);
   const segIdCounter = useRef(0);
@@ -651,6 +654,7 @@ export default function Marqad() {
   const sessionStartRef = useRef<number>(0);
   const pendingAudioBlobRef = useRef<Blob | null>(null);
   const pendingBatchTitleRef = useRef<string>("");
+  const isStoppingRef = useRef(false); // guards against double-stop race condition
   const sessionStreamingSecRef = useRef(0); // actual streaming time (excludes pauses)
   const streamingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -729,8 +733,12 @@ export default function Marqad() {
   }, []);
 
   // Save usage on page close/unload (so partial session is counted)
+  // Also warn user if save dialog is open (unsaved recording)
+  const saveDialogRef = useRef<typeof saveDialog>(null);
+  useEffect(() => { saveDialogRef.current = saveDialog; }, [saveDialog]);
+
   useEffect(() => {
-    const handleUnload = () => {
+    const handleUnload = (e: BeforeUnloadEvent) => {
       const sec = sessionStreamingSecRef.current;
       const remainder = sec % 10;
       if (remainder > 0) {
@@ -747,6 +755,11 @@ export default function Marqad() {
         } catch {
           addToMonthlySeconds(remainder);
         }
+      }
+      // Warn user if save dialog is open — recording hasn't been saved yet
+      if (saveDialogRef.current?.show) {
+        e.preventDefault();
+        e.returnValue = "You have an unsaved recording. Are you sure you want to leave?";
       }
     };
     window.addEventListener("beforeunload", handleUnload);
@@ -1405,6 +1418,7 @@ export default function Marqad() {
     elapsedRef.current = 0;
     sessionStreamingSecRef.current = 0;
     sessionStartRef.current = Date.now();
+    isStoppingRef.current = false; // reset stop guard for new recording
     isAtBottomRef.current = true; // reset auto-scroll on new session
 
     try {
@@ -1668,6 +1682,10 @@ export default function Marqad() {
   // Stored in a ref so handleWsMessage (defined earlier) can call it.
   // ============================================================
   const autoSaveOnFailure = useCallback(() => {
+    // Guard against double-call (e.g. WebSocket drops while user already pressed Stop)
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
+
     // Stop local recording FIRST (before teardown) so we can collect the blob.
     // teardown() calls recorder.stop() without collecting chunks, which would
     // lose the audio. We must grab the blob before teardown destroys the recorder.
@@ -1717,6 +1735,9 @@ export default function Marqad() {
     }
     // Don't allow stop during batch processing (the job is already submitted)
     if (batchProcessingRef.current) return;
+    // Guard against double-call (e.g. user clicks Stop twice, or autoSaveOnFailure fires simultaneously)
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
 
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
@@ -1810,12 +1831,13 @@ export default function Marqad() {
           if (audioPath) {
             saveSessionToDB({ ...record, audioPath, audioSize: blob.size }).catch(() => {});
           }
+          pendingAudioBlobRef.current = null; // clear ref to allow GC
         });
       }
     } else {
       // Batch mode — start transcription with the captured title
       pendingBatchTitleRef.current = title;
-      processBatchTranscription(sessionData.audioBlob, sessionData.batchModel, title);
+      processBatchTranscriptionRef.current(sessionData.audioBlob, sessionData.batchModel, title);
     }
 
     setSaveDialog(null);
@@ -2034,6 +2056,11 @@ export default function Marqad() {
       setBatchError(err.message);
     }
   }, []);
+
+  // Keep the ref in sync so confirmSaveSession can call it
+  useEffect(() => {
+    processBatchTranscriptionRef.current = processBatchTranscription;
+  }, [processBatchTranscription]);
 
   // ============================================================
   // Copy transcript
@@ -2414,6 +2441,7 @@ export default function Marqad() {
       startMediaSession();
       sessionStreamingSecRef.current = 0;
       sessionStartRef.current = Date.now();
+      isStoppingRef.current = false; // reset stop guard for new recording
       acquireWakeLock();
       startMediaSession();
 
@@ -2458,6 +2486,10 @@ export default function Marqad() {
   }, [batchProcessing]);
 
   const stopBatchRecording = useCallback(async () => {
+    // Guard against double-call
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
+
     // Stop timers
     if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
     if (streamingTimerRef.current) { clearInterval(streamingTimerRef.current); streamingTimerRef.current = null; }
@@ -2571,6 +2603,7 @@ export default function Marqad() {
       const updated = await loadPeriodsFromDB().catch(() => periods);
       setPeriods(updated);
       setNewPeriod({ period_number: "", class_name: "", start_time: "", end_time: "" });
+      setPeriodError(null);
     } else {
       setPeriodError("Failed to save — check your connection and try again");
     }

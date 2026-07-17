@@ -1,14 +1,15 @@
-fix: audit fixes — validation, error handling, mobile UX
+fix: deep audit — race conditions, memory leak, UX edge cases
 
-- Add end_time > start_time validation (prevents midnight-spanning periods)
-- Clear period error when user starts typing in the form
-- Show error feedback when period deletion fails
-- Sync SaveDialog name state when defaultName prop changes
-- Increase mobile focus timeout to 300ms for keyboard readiness
-- Validate numeric input in normalizeTime (reject malformed strings)
-- Edge function: validate period_number is positive integer
-- Edge function: validate time format with regex (HH:MM or HH:MM:SS)
-- Edge function: validate end_time > start_time server-side
+- Add isStoppingRef guard to prevent double-stop race condition in
+  stopRecording, stopBatchRecording, and autoSaveOnFailure
+- Clear pendingAudioBlobRef after upload to prevent memory leak
+- autoSaveOnFailure now checks isStoppingRef before showing dialog
+  (prevents duplicate dialogs if WebSocket drops during manual stop)
+- Add beforeunload warning when save dialog is open (prevents data loss)
+- Clear period error on successful add (was lingering from previous error)
+- Fix CSS z-index conflict (settings overlay now 1001, save dialog 1000)
+- Add max-height + overflow-y to save dialog on mobile (keyboard scroll)
+- Use ref pattern for processBatchTranscription to avoid forward reference
 
 Generated with [Devin](https://devin.ai)
 

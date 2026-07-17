@@ -1912,7 +1912,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: 1001;
   animation: fade-in 0.15s ease;
 }
 
@@ -2153,6 +2153,8 @@ html, body {
   .save-dialog {
     padding: 20px;
     width: 92%;
+    max-height: 80vh;
+    overflow-y: auto;
   }
 
   .save-dialog-title {
