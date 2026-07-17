@@ -64,6 +64,35 @@ serve(async (req) => {
         );
       }
 
+      // Validate period_number is a positive integer
+      if (typeof period_number !== "number" || period_number < 1 || !Number.isInteger(period_number)) {
+        return new Response(
+          JSON.stringify({ error: "period_number must be a positive integer" }),
+          { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Validate time format (HH:MM or HH:MM:SS)
+      const timeRegex = /^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+      if (!timeRegex.test(start_time) || !timeRegex.test(end_time)) {
+        return new Response(
+          JSON.stringify({ error: "start_time and end_time must be in HH:MM format" }),
+          { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+        );
+      }
+
+      // Validate end_time is after start_time
+      const toMin = (t: string) => {
+        const [h, m] = t.split(":").map(Number);
+        return h * 60 + m;
+      };
+      if (toMin(end_time) <= toMin(start_time)) {
+        return new Response(
+          JSON.stringify({ error: "end_time must be after start_time" }),
+          { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+        );
+      }
+
       const { data, error } = await supabase
         .from("marqad_class_periods")
         .upsert({

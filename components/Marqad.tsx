@@ -2534,6 +2534,16 @@ export default function Marqad() {
       return;
     }
 
+    // Validate end time is after start time (periods cannot span midnight)
+    const toMin = (t: string) => {
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+    if (toMin(newPeriod.end_time) <= toMin(newPeriod.start_time)) {
+      setPeriodError("End time must be after start time");
+      return;
+    }
+
     // Check for overlap with existing periods
     const overlap = findOverlap(periods, {
       period_number: num,
@@ -2571,8 +2581,17 @@ export default function Marqad() {
     if (ok) {
       const updated = await loadPeriodsFromDB().catch(() => periods.filter(p => p.id !== id));
       setPeriods(updated);
+      setPeriodError(null);
+    } else {
+      setPeriodError("Failed to delete — check your connection and try again");
     }
   }, [periods]);
+
+  // Clear period error when user starts editing the form
+  const updateNewPeriod = useCallback((p: { period_number: string; class_name: string; start_time: string; end_time: string }) => {
+    if (periodError) setPeriodError(null);
+    setNewPeriod(p);
+  }, [periodError]);
 
   // ============================================================
   // Audio download / save
@@ -3502,7 +3521,7 @@ export default function Marqad() {
         <SettingsOverlay
           periods={periods}
           newPeriod={newPeriod}
-          setNewPeriod={setNewPeriod}
+          setNewPeriod={updateNewPeriod}
           periodError={periodError}
           periodSaving={periodSaving}
           onAdd={handleAddPeriod}

@@ -13,12 +13,18 @@ export function SaveDialog({ defaultName, isBatch, onConfirm, onCancel }: SaveDi
   const [name, setName] = useState(defaultName);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Sync name if defaultName changes (e.g. different recording)
+  useEffect(() => {
+    setName(defaultName);
+  }, [defaultName]);
+
   // Auto-focus and select the name so the user can quickly edit or just press Enter
+  // 300ms timeout for mobile keyboard readiness
   useEffect(() => {
     const timer = setTimeout(() => {
       inputRef.current?.focus();
       inputRef.current?.select();
-    }, 100);
+    }, 300);
     return () => clearTimeout(timer);
   }, []);
 

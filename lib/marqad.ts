@@ -1035,7 +1035,13 @@ export async function loadPeriodsFromDB(): Promise<ClassPeriod[]> {
 function normalizeTime(t: string): string {
   if (!t) return t;
   const parts = t.split(":");
-  if (parts.length >= 2) return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}`;
+  if (parts.length >= 2) {
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (!isNaN(h) && !isNaN(m)) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
   return t;
 }
 
