@@ -76,6 +76,7 @@ serve(async (req) => {
         ai_reasoning_at,
         reconciled_transcript,
         reconciled_at,
+        title,
       } = body;
 
       if (!id) {
@@ -105,6 +106,7 @@ serve(async (req) => {
       if (ai_reasoning_at !== undefined) record.ai_reasoning_at = ai_reasoning_at;
       if (reconciled_transcript !== undefined) record.reconciled_transcript = reconciled_transcript;
       if (reconciled_at !== undefined) record.reconciled_at = reconciled_at;
+      if (title !== undefined) record.title = title;
 
       const { data, error } = await supabase
         .from("marqad_sessions")

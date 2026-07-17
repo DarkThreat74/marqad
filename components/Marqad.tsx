@@ -10,6 +10,7 @@ import {
   type UsageStats,
   type BatchModel,
   type BatchWordResult,
+  type ClassPeriod,
   speakerColor,
   classifyWord,
   classifyPause,
@@ -41,8 +42,16 @@ import {
   saveSessionToDB,
   loadHistoryFromDB,
   deleteSessionFromDB,
+  loadPeriodsCache,
+  loadPeriodsFromDB,
+  savePeriodToDB,
+  deletePeriodFromDB,
+  findOverlap,
+  generateSessionName,
 } from "@/lib/marqad";
 import { webmToMp3, webmToWav, downloadBlob, saveAudioToDB, getAudioFromDB, uploadAudioToStorage } from "@/lib/audio";
+import { SaveDialog } from "@/components/SaveDialog";
+import { SettingsOverlay } from "@/components/SettingsOverlay";
 
 // ============================================================
 // Memoized segment view
@@ -440,6 +449,9 @@ function HistoryPanel({
                     {Math.round(record.durationSec / 60)} min ·{" "}
                     {record.segmentCount} segments
                   </div>
+                  {record.title && (
+                    <div className="history-entry-title">{record.title}</div>
+                  )}
                   <div className="history-entry-preview">{record.preview}</div>
                 </div>
                 {confirmDelete === record.id ? (
@@ -550,6 +562,23 @@ export default function Marqad() {
   const [reconcileError, setReconcileError] = useState<string | null>(null);
   const [showCompactRecorder, setShowCompactRecorder] = useState(false); // mini recording widget on return
 
+  // --- Save dialog (appears on recording stop) ---
+  const [saveDialog, setSaveDialog] = useState<{
+    show: boolean;
+    defaultName: string;
+    sessionData: any; // holds segments, exportText, streamingSec, audioBlob, batchModel, batchWords
+    isBatch: boolean;
+  } | null>(null);
+
+  // --- Class periods (for automatic session naming) ---
+  const [periods, setPeriods] = useState<ClassPeriod[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newPeriod, setNewPeriod] = useState<{ period_number: string; class_name: string; start_time: string; end_time: string }>({
+    period_number: "", class_name: "", start_time: "", end_time: "",
+  });
+  const [periodError, setPeriodError] = useState<string | null>(null);
+  const [periodSaving, setPeriodSaving] = useState(false);
+
   // --- Fix this popover (vocabulary correction) ---
   const [fixPopover, setFixPopover] = useState<{
     show: boolean;
@@ -620,6 +649,8 @@ export default function Marqad() {
   const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPausedRef = useRef(false);
   const sessionStartRef = useRef<number>(0);
+  const pendingAudioBlobRef = useRef<Blob | null>(null);
+  const pendingBatchTitleRef = useRef<string>("");
   const sessionStreamingSecRef = useRef(0); // actual streaming time (excludes pauses)
   const streamingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -650,6 +681,14 @@ export default function Marqad() {
     // Load usage from database (async)
     loadMonthlySecondsFromDB().then(() => {
       setUsageStats(getUsageStats(0));
+    });
+
+    // Load class periods — instant from cache, then sync from DB
+    setPeriods(loadPeriodsCache());
+    loadPeriodsFromDB().then((dbPeriods) => {
+      setPeriods(dbPeriods);
+    }).catch(() => {
+      // DB unreachable — keep cached/default periods
     });
   }, []);
 
@@ -1688,6 +1727,7 @@ export default function Marqad() {
     shouldReconnectRef.current = false;
     const streamingSec = sessionStreamingSecRef.current;
     const sessionId = `session-${Date.now()}`;
+    const recordingStart = new Date(sessionStartRef.current);
 
     // Capture segments NOW — teardown will clear refs, and the async
     // stopLocalRecording callback may run after refs are cleared.
@@ -1696,26 +1736,13 @@ export default function Marqad() {
     // Stop local recording FIRST, then teardown.
     // teardown() calls recorder.stop() without collecting chunks, so if it
     // runs before stopLocalRecording, the audio blob is lost.
-    stopLocalRecording().then(async (blob) => {
+    pendingAudioBlobRef.current = null;
+    stopLocalRecording().then((blob) => {
       teardown();
       if (blob) {
         setAudioBlob(blob);
+        pendingAudioBlobRef.current = blob;
         console.log("[Marqad] Local recording saved:", blob.size, "bytes");
-        // Upload audio to Supabase Storage (cloud persistence)
-        const audioPath = await uploadAudioToStorage(sessionId, blob);
-        if (audioPath && currentSegments.length > 0) {
-          // Update the DB session record with the audio path
-          saveSessionToDB({
-            id: sessionId,
-            date: new Date().toISOString(),
-            durationSec: streamingSec,
-            segmentCount: currentSegments.length,
-            preview: currentSegments.map((s) => s.transcript).join(" ").slice(0, 120) || "(empty session)",
-            exportText: buildExportText(currentSegments),
-            audioPath,
-            audioSize: blob.size,
-          }).catch(() => {});
-        }
       }
     }).catch(() => {
       // If stopLocalRecording fails, still teardown to clean up
@@ -1727,26 +1754,19 @@ export default function Marqad() {
     setStatusKind("idle");
     setPartial("");
 
-    // Save to history (localStorage + database) — do this synchronously
-    // so the transcript appears immediately, even if audio upload is still pending
+    // Show save dialog if there are segments — user can edit the name or accept default
     if (currentSegments.length > 0) {
-      const exportText = buildExportText(currentSegments);
-      const preview = currentSegments
-        .map((s) => s.transcript)
-        .join(" ")
-        .slice(0, 120);
-      const record: SessionRecord = {
-        id: sessionId,
-        date: new Date().toISOString(),
-        durationSec: streamingSec,
-        segmentCount: currentSegments.length,
-        preview: preview || "(empty session)",
-        exportText,
-      };
-      const updated = saveSession(record);
-      setHistory(updated);
-      // Also save to database
-      saveSessionToDB(record).catch(() => {});
+      const defaultName = generateSessionName(recordingStart, periods);
+      setSaveDialog({
+        show: true,
+        defaultName,
+        sessionData: {
+          sessionId,
+          segments: currentSegments,
+          streamingSec,
+        },
+        isBatch: false,
+      });
     }
 
     // Update monthly usage — only the remainder since last 10-second save
@@ -1758,7 +1778,268 @@ export default function Marqad() {
     } else {
       setUsageStats(getUsageStats(0));
     }
-  }, [teardown]);
+  }, [teardown, periods]);
+
+  // ============================================================
+  // Save dialog — confirm session name and save
+  // ============================================================
+
+  const confirmSaveSession = useCallback(async (title: string) => {
+    if (!saveDialog) return;
+    const { sessionData, isBatch } = saveDialog;
+
+    if (!isBatch) {
+      // Live mode — save to localStorage + DB with title
+      const { sessionId, segments, streamingSec } = sessionData;
+      const exportText = buildExportText(segments);
+      const preview = segments
+        .map((s: Segment) => s.transcript)
+        .join(" ")
+        .slice(0, 120);
+      const record: SessionRecord = {
+        id: sessionId,
+        date: new Date().toISOString(),
+        durationSec: streamingSec,
+        segmentCount: segments.length,
+        preview: preview || "(empty session)",
+        exportText,
+        title,
+      };
+      const updated = saveSession(record);
+      setHistory(updated);
+      saveSessionToDB(record).catch(() => {});
+
+      // Upload audio if available (may still be pending from stopLocalRecording)
+      const blob = pendingAudioBlobRef.current;
+      if (blob) {
+        uploadAudioToStorage(sessionId, blob).then((audioPath) => {
+          if (audioPath) {
+            saveSessionToDB({ ...record, audioPath, audioSize: blob.size }).catch(() => {});
+          }
+        });
+      }
+    } else {
+      // Batch mode — start transcription with the captured title
+      pendingBatchTitleRef.current = title;
+      processBatchTranscription(sessionData.audioBlob, sessionData.batchModel, title);
+    }
+
+    setSaveDialog(null);
+  }, [saveDialog]);
+
+  const cancelSaveDialog = useCallback(() => {
+    // For live mode: still save with default name (don't lose the transcript)
+    // For batch mode: still proceed with transcription (don't lose the recording)
+    if (saveDialog) {
+      confirmSaveSession(saveDialog.defaultName);
+    }
+  }, [saveDialog, confirmSaveSession]);
+
+  // ============================================================
+  // Batch transcription — runs after save dialog confirmation
+  // ============================================================
+
+  const processBatchTranscription = useCallback(async (
+    audioBlob: Blob,
+    batchModel: BatchModel,
+    title: string
+  ) => {
+    setBatchProcessing(true);
+    setRecState("processing");
+    setBatchStatus("Preparing audio...");
+
+    try {
+      if (!audioBlob) throw new Error("No audio recorded — microphone may not be available");
+
+      // Step 1: Get a batch JWT from the Edge Function
+      setBatchStatus("Authenticating with Speechmatics...");
+      const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
+      if (!tokenResp.ok) {
+        const errText = await tokenResp.text().catch(() => "");
+        throw new Error(`Could not get batch token (HTTP ${tokenResp.status}): ${errText}`);
+      }
+      const tokenData = await tokenResp.json();
+      const batchJwt = tokenData.jwt;
+      if (!batchJwt) throw new Error(`No JWT in token response: ${JSON.stringify(tokenData)}`);
+
+      // Step 2: Build batch config
+      const cache = loadVocabCache();
+      const extraVocab = cache?.vocab;
+      const batchConfigJson = buildBatchConfig(extraVocab, batchModel);
+
+      // Step 3: Convert webm to WAV
+      setBatchStatus("Converting audio to WAV...");
+      const wavBlob = await webmToWav(audioBlob, CONFIG.INPUT_GAIN);
+
+      // Step 4: Create batch job
+      setBatchStatus("Uploading audio to Speechmatics...");
+      const formData = new FormData();
+      formData.append("data_file", wavBlob, "recording.wav");
+      formData.append("config", batchConfigJson);
+
+      const jobResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${batchJwt}` },
+        body: formData,
+      });
+
+      if (!jobResp.ok) {
+        const errText = await jobResp.text();
+        let cleanErr = errText;
+        try {
+          const errJson = JSON.parse(errText);
+          cleanErr = errJson.detail || errJson.error || errText;
+        } catch {}
+        throw new Error(`Speechmatics rejected the job (HTTP ${jobResp.status}): ${cleanErr}`);
+      }
+
+      const jobData = await jobResp.json();
+      const jobId = jobData.id;
+      if (!jobId) throw new Error("No job ID in response");
+      batchJobIdRef.current = jobId;
+
+      // Step 5: Poll job status every 2 seconds
+      setBatchStatus("Speechmatics is loading the transcription model...");
+      const pollStartTime = Date.now();
+      const POLL_TIMEOUT_MS = 15 * 60 * 1000;
+
+      batchPollRef.current = setInterval(async () => {
+        if (Date.now() - pollStartTime > POLL_TIMEOUT_MS) {
+          if (batchPollRef.current) {
+            clearInterval(batchPollRef.current);
+            batchPollRef.current = null;
+          }
+          setBatchStatus("Transcription timed out — please try again");
+          setBatchProcessing(false);
+          setRecState("idle");
+          setStatusKind("error");
+          setStatusText("Batch transcription timed out");
+          return;
+        }
+        try {
+          const statusResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/${jobId}`, {
+            headers: { "Authorization": `Bearer ${batchJwt}` },
+          });
+          if (!statusResp.ok) return;
+          const statusData = await statusResp.json();
+          const status = statusData.job?.status;
+          const elapsed = Math.round((Date.now() - pollStartTime) / 1000);
+
+          if (status === "running") {
+            if (elapsed < 5) {
+              setBatchStatus("Loading transcription model...");
+            } else if (elapsed < 15) {
+              setBatchStatus(`Transcribing audio... ${elapsed}s`);
+            } else {
+              setBatchStatus(`Still transcribing... ${elapsed}s elapsed`);
+            }
+          } else if (status === "queued") {
+            setBatchStatus(`Waiting in queue... ${elapsed}s`);
+          }
+
+          if (status === "done") {
+            if (batchPollRef.current) {
+              clearInterval(batchPollRef.current);
+              batchPollRef.current = null;
+            }
+
+            setBatchStatus("Fetching transcript...");
+
+            // Fetch transcript — JSON for Enhanced, txt for Melia
+            const fetchFormat = batchModel === "melia-1" ? "txt" : "json";
+            const transcriptResp = await fetch(
+              `${CONFIG.BATCH_API_HOST}/jobs/${jobId}/transcript?format=${fetchFormat}`,
+              { headers: { "Authorization": `Bearer ${batchJwt}` } }
+            );
+
+            if (!transcriptResp.ok) throw new Error(`Could not fetch transcript (HTTP ${transcriptResp.status})`);
+
+            let transcriptText = "";
+            let batchWords: BatchWordResult[] | undefined;
+
+            if (fetchFormat === "json") {
+              const transcriptJson = await transcriptResp.json();
+              const parsed = parseBatchTranscriptJSON(transcriptJson);
+              transcriptText = parsed.transcriptText;
+              batchWords = parsed.words;
+            } else {
+              transcriptText = await transcriptResp.text();
+            }
+
+            if (!transcriptText.trim()) {
+              throw new Error("Transcript is empty — the recording may have been silent");
+            }
+
+            // Save to history (localStorage + database) with title
+            const batchSessionId = `batch-${Date.now()}`;
+            const record: SessionRecord = {
+              id: batchSessionId,
+              date: new Date().toISOString(),
+              durationSec: elapsedRef.current,
+              segmentCount: 0,
+              preview: transcriptText.slice(0, 120).replace(/\n/g, " "),
+              exportText: transcriptText,
+              batchModel,
+              batchWords,
+              title,
+            };
+            const updated = saveSession(record);
+            setHistory(updated);
+            saveSessionToDB(record).catch(() => {});
+
+            // Upload audio to Supabase Storage
+            if (audioBlob) {
+              uploadAudioToStorage(batchSessionId, audioBlob).then((audioPath) => {
+                if (audioPath) {
+                  saveSessionToDB({
+                    ...record,
+                    audioPath,
+                    audioSize: audioBlob.size,
+                  }).catch(() => {});
+                }
+              });
+            }
+
+            // Show the transcript in viewing mode
+            setViewingRecord(record);
+            setEditText(transcriptText);
+
+            setBatchProcessing(false);
+            setRecState("idle");
+            setStatusText("Ready");
+            setStatusKind("idle");
+            setBatchStatus("");
+          } else if (status === "rejected") {
+            if (batchPollRef.current) {
+              clearInterval(batchPollRef.current);
+              batchPollRef.current = null;
+            }
+            const rejectReason = statusData.job?.error || statusData.job?.errors || "unknown error";
+            setBatchStatus(`Transcription failed: ${rejectReason}`);
+            setBatchProcessing(false);
+            setRecState("idle");
+            setStatusKind("error");
+            setStatusText(`Batch transcription failed: ${rejectReason}`);
+          }
+        } catch (pollErr) {
+          console.error("[Marqad] Batch: polling error:", pollErr);
+        }
+      }, 2000);
+
+    } catch (err: any) {
+      console.error("[Marqad] Batch: fatal error:", err);
+      if (batchPollRef.current) {
+        clearInterval(batchPollRef.current);
+        batchPollRef.current = null;
+      }
+      setBatchProcessing(false);
+      setRecState("idle");
+      setStatusKind("error");
+      setStatusText(`Batch error: ${err.message}`);
+      setBatchStatus(`Error: ${err.message}. You can still download the recording.`);
+      setBatchError(err.message);
+    }
+  }, []);
 
   // ============================================================
   // Copy transcript
@@ -2195,8 +2476,6 @@ export default function Marqad() {
     }
 
     // Stop local recording and get the audio blob
-    // This is the SAME recorder used for batch submission — we keep the
-    // blob even if transcription fails, so the user never loses their recording.
     const audioBlob = await stopLocalRecording();
     console.log("[Marqad] Batch: audio blob size:", audioBlob?.size || 0, "bytes,", ((audioBlob?.size || 0) / 1024 / 1024).toFixed(2), "MB");
 
@@ -2214,248 +2493,92 @@ export default function Marqad() {
     if (audioBlob) setAudioBlob(audioBlob);
 
     setBatchRecording(false);
-    setBatchProcessing(true);
-    setRecState("processing");
-    setBatchStatus("Preparing audio...");
+    setRecState("idle");
+    setStatusText("Stopped");
+    setStatusKind("idle");
 
-    try {
-      if (!audioBlob) throw new Error("No audio recorded — microphone may not be available");
+    // Show save dialog — user confirms name, then transcription starts
+    const recordingStart = new Date(sessionStartRef.current);
+    const batchModel: BatchModel = recordingMode === "batch-melia" ? "melia-1" : "enhanced";
+    const defaultName = generateSessionName(recordingStart, periods);
 
-      // Step 1: Get a batch JWT from the Edge Function
-      setBatchStatus("Authenticating with Speechmatics...");
-      console.log("[Marqad] Batch: fetching batch token from", CONFIG.BATCH_TOKEN_ENDPOINT);
-      const tokenResp = await fetch(CONFIG.BATCH_TOKEN_ENDPOINT);
-      console.log("[Marqad] Batch: token response:", tokenResp.status, tokenResp.statusText);
-      if (!tokenResp.ok) {
-        const errText = await tokenResp.text().catch(() => "");
-        throw new Error(`Could not get batch token (HTTP ${tokenResp.status}): ${errText}`);
-      }
-      const tokenData = await tokenResp.json();
-      const batchJwt = tokenData.jwt;
-      if (!batchJwt) throw new Error(`No JWT in token response: ${JSON.stringify(tokenData)}`);
-      console.log("[Marqad] Batch: token acquired");
-
-      // Step 2: Build batch config — model depends on recording mode
-      const batchModel: BatchModel = recordingMode === "batch-melia" ? "melia-1" : "enhanced";
-      const cache = loadVocabCache();
-      const extraVocab = cache?.vocab;
-      const batchConfigJson = buildBatchConfig(extraVocab, batchModel);
-      console.log("[Marqad] Batch: config built, model:", batchModel);
-
-      // Step 3: Convert webm to WAV — the Batch API does NOT support webm.
-      setBatchStatus("Converting audio to WAV...");
-      console.log("[Marqad] Batch: converting webm to WAV, input size:", audioBlob.size);
-      const wavBlob = await webmToWav(audioBlob, CONFIG.INPUT_GAIN);
-      console.log("[Marqad] Batch: WAV converted, size:", wavBlob.size);
-
-      // Step 4: Create batch job — upload WAV to Speechmatics
-      setBatchStatus("Uploading audio to Speechmatics...");
-      const formData = new FormData();
-      formData.append("data_file", wavBlob, "recording.wav");
-      formData.append("config", batchConfigJson);
-
-      console.log("[Marqad] Batch: submitting job to", `${CONFIG.BATCH_API_HOST}/jobs/`);
-
-      const jobResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${batchJwt}`,
+    if (audioBlob) {
+      setSaveDialog({
+        show: true,
+        defaultName,
+        sessionData: {
+          audioBlob,
+          batchModel,
         },
-        body: formData,
+        isBatch: true,
       });
-
-      console.log("[Marqad] Batch: job response:", jobResp.status, jobResp.statusText);
-      if (!jobResp.ok) {
-        const errText = await jobResp.text();
-        console.error("[Marqad] Batch: job creation failed:", errText);
-        // Parse Speechmatics error response for a clean message
-        let cleanErr = errText;
-        try {
-          const errJson = JSON.parse(errText);
-          cleanErr = errJson.detail || errJson.error || errText;
-        } catch {}
-        throw new Error(`Speechmatics rejected the job (HTTP ${jobResp.status}): ${cleanErr}`);
-      }
-
-      const jobData = await jobResp.json();
-      const jobId = jobData.id;
-      if (!jobId) throw new Error("No job ID in response");
-      batchJobIdRef.current = jobId;
-      console.log("[Marqad] Batch: job created, ID:", jobId);
-
-      // Step 5: Poll job status every 2 seconds
-      // The Batch API has a fixed overhead (~10-15s) for job setup and model
-      // loading, even for very short audio. Poll every 2s so short recordings
-      // are detected as done as soon as possible.
-      // Timeout after 15 minutes to avoid infinite polling.
-      setBatchStatus("Speechmatics is loading the transcription model...");
-
-      const pollStartTime = Date.now();
-      const POLL_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
-
-      batchPollRef.current = setInterval(async () => {
-        // Check for timeout
-        if (Date.now() - pollStartTime > POLL_TIMEOUT_MS) {
-          if (batchPollRef.current) {
-            clearInterval(batchPollRef.current);
-            batchPollRef.current = null;
-          }
-          setBatchStatus("Transcription timed out — please try again");
-          setBatchProcessing(false);
-          setRecState("idle");
-          setStatusKind("error");
-          setStatusText("Batch transcription timed out");
-          return;
-        }
-        try {
-          const statusResp = await fetch(`${CONFIG.BATCH_API_HOST}/jobs/${jobId}`, {
-            headers: { "Authorization": `Bearer ${batchJwt}` },
-          });
-          if (!statusResp.ok) {
-            console.warn("[Marqad] Batch: status check failed:", statusResp.status);
-            return;
-          }
-          const statusData = await statusResp.json();
-          const status = statusData.job?.status;
-          const elapsed = Math.round((Date.now() - pollStartTime) / 1000);
-          console.log(`[Marqad] Batch: job status: ${status} (${elapsed}s)`);
-
-          // Show descriptive status messages so the user knows what's happening
-          if (status === "running") {
-            if (elapsed < 5) {
-              setBatchStatus("Loading transcription model...");
-            } else if (elapsed < 15) {
-              setBatchStatus(`Transcribing audio... ${elapsed}s`);
-            } else {
-              setBatchStatus(`Still transcribing... ${elapsed}s elapsed`);
-            }
-          } else if (status === "queued") {
-            setBatchStatus(`Waiting in queue... ${elapsed}s`);
-          }
-
-          if (status === "done") {
-            // Stop polling
-            if (batchPollRef.current) {
-              clearInterval(batchPollRef.current);
-              batchPollRef.current = null;
-            }
-
-            setBatchStatus("Fetching transcript...");
-            console.log("[Marqad] Batch: job done, fetching transcript");
-
-            // Fetch transcript — JSON for Enhanced (to get per-word confidence),
-            // txt for Melia (no confidence scores available on Melia 1)
-            const fetchFormat = batchModel === "melia-1" ? "txt" : "json";
-            const transcriptResp = await fetch(
-              `${CONFIG.BATCH_API_HOST}/jobs/${jobId}/transcript?format=${fetchFormat}`,
-              { headers: { "Authorization": `Bearer ${batchJwt}` } }
-            );
-
-            console.log("[Marqad] Batch: transcript response:", transcriptResp.status, transcriptResp.statusText);
-            if (!transcriptResp.ok) throw new Error(`Could not fetch transcript (HTTP ${transcriptResp.status})`);
-
-            let transcriptText = "";
-            let batchWords: BatchWordResult[] | undefined;
-
-            if (fetchFormat === "json") {
-              // Enhanced model — parse JSON to extract per-word confidence scores
-              const transcriptJson = await transcriptResp.json();
-              const parsed = parseBatchTranscriptJSON(transcriptJson);
-              transcriptText = parsed.transcriptText;
-              batchWords = parsed.words;
-              console.log("[Marqad] Batch: JSON parsed, words:", batchWords.length,
-                "low-confidence:", batchWords.filter(w => isLowConfidence(w.confidence)).length);
-            } else {
-              // Melia model — plain text, no confidence scores
-              transcriptText = await transcriptResp.text();
-            }
-
-            console.log("[Marqad] Batch: transcript received, length:", transcriptText.length, "chars");
-            console.log("[Marqad] Batch: transcript preview:", transcriptText.slice(0, 200));
-
-            if (!transcriptText.trim()) {
-              throw new Error("Transcript is empty — the recording may have been silent");
-            }
-
-            // Save to history (localStorage + database)
-            const batchSessionId = `batch-${Date.now()}`;
-            const record: SessionRecord = {
-              id: batchSessionId,
-              date: new Date().toISOString(),
-              durationSec: elapsedRef.current,
-              segmentCount: 0,
-              preview: transcriptText.slice(0, 120).replace(/\n/g, " "),
-              exportText: transcriptText,
-              batchModel,
-              batchWords,
-            };
-            const updated = saveSession(record);
-            setHistory(updated);
-            // Save transcript to database
-            saveSessionToDB(record).catch(() => {});
-
-            // Upload audio to Supabase Storage if we have it
-            if (audioBlob) {
-              uploadAudioToStorage(batchSessionId, audioBlob).then((audioPath) => {
-                if (audioPath) {
-                  // Update the DB record with the audio path
-                  saveSessionToDB({
-                    ...record,
-                    audioPath,
-                    audioSize: audioBlob.size,
-                  }).catch(() => {});
-                }
-              });
-            }
-
-            // Show the transcript in viewing mode
-            setViewingRecord(record);
-            setEditText(transcriptText);
-
-            setBatchProcessing(false);
-            setRecState("idle");
-            setStatusText("Ready");
-            setStatusKind("idle");
-            setBatchStatus("");
-            console.log("[Marqad] Batch: complete, transcript displayed");
-          } else if (status === "rejected") {
-            if (batchPollRef.current) {
-              clearInterval(batchPollRef.current);
-              batchPollRef.current = null;
-            }
-            const rejectReason = statusData.job?.error || statusData.job?.errors || "unknown error";
-            console.error("[Marqad] Batch: job rejected:", JSON.stringify(statusData));
-            setBatchStatus(`Transcription failed: ${rejectReason}`);
-            setBatchProcessing(false);
-            setRecState("idle");
-            setStatusKind("error");
-            setStatusText(`Batch transcription failed: ${rejectReason}`);
-          }
-        } catch (pollErr) {
-          console.error("[Marqad] Batch: polling error:", pollErr);
-          // Polling error — keep trying, will retry on next interval
-        }
-      }, 2000);
-
-    } catch (err: any) {
-      console.error("[Marqad] Batch: fatal error:", err);
-      // Clean up polling interval if it was started before the error
-      if (batchPollRef.current) {
-        clearInterval(batchPollRef.current);
-        batchPollRef.current = null;
-      }
+    } else {
+      // No audio — show error directly
       setBatchProcessing(false);
-      setRecState("idle");
       setStatusKind("error");
-      setStatusText(`Batch error: ${err.message}`);
-      // Keep the error message visible in the batch status area AND keep
-      // the audio blob available for download — the recording is NOT lost
-      // even if transcription failed.
-      setBatchStatus(`Error: ${err.message}. You can still download the recording.`);
-      // Show the error in the main content area, not just the rail status
-      setBatchError(err.message);
+      setStatusText("No audio recorded — microphone may not be available");
+      setBatchError("No audio recorded — microphone may not be available");
     }
-  }, [releaseWakeLock, stopLocalRecording, recordingMode]);
+  }, [releaseWakeLock, stopLocalRecording, recordingMode, periods]);
+
+  // ============================================================
+  // Class periods — add/delete handlers
+  // ============================================================
+
+  const handleAddPeriod = useCallback(async () => {
+    const num = parseInt(newPeriod.period_number, 10);
+    if (!num || num < 1) {
+      setPeriodError("Enter a valid period number (1 or higher)");
+      return;
+    }
+    if (!newPeriod.class_name.trim()) {
+      setPeriodError("Enter a class name");
+      return;
+    }
+    if (!newPeriod.start_time || !newPeriod.end_time) {
+      setPeriodError("Enter both start and end times");
+      return;
+    }
+
+    // Check for overlap with existing periods
+    const overlap = findOverlap(periods, {
+      period_number: num,
+      class_name: newPeriod.class_name,
+      start_time: newPeriod.start_time,
+      end_time: newPeriod.end_time,
+    });
+    if (overlap) {
+      setPeriodError(`Time overlaps with Period ${overlap.period_number} (${overlap.class_name}: ${overlap.start_time}–${overlap.end_time})`);
+      return;
+    }
+
+    setPeriodSaving(true);
+    setPeriodError(null);
+    const saved = await savePeriodToDB({
+      period_number: num,
+      class_name: newPeriod.class_name.trim(),
+      start_time: newPeriod.start_time,
+      end_time: newPeriod.end_time,
+    });
+    setPeriodSaving(false);
+
+    if (saved) {
+      // Reload periods from DB
+      const updated = await loadPeriodsFromDB().catch(() => periods);
+      setPeriods(updated);
+      setNewPeriod({ period_number: "", class_name: "", start_time: "", end_time: "" });
+    } else {
+      setPeriodError("Failed to save — check your connection and try again");
+    }
+  }, [newPeriod, periods]);
+
+  const handleDeletePeriod = useCallback(async (id: number) => {
+    const ok = await deletePeriodFromDB(id);
+    if (ok) {
+      const updated = await loadPeriodsFromDB().catch(() => periods.filter(p => p.id !== id));
+      setPeriods(updated);
+    }
+  }, [periods]);
 
   // ============================================================
   // Audio download / save
@@ -2838,6 +2961,18 @@ export default function Marqad() {
               {vocabRefreshing ? "…" : "↻"}
             </button>
           )}
+          {recState === "idle" && !batchProcessing && (
+            <button
+              className="settings-gear-btn"
+              onClick={() => setSettingsOpen(true)}
+              title="Class period settings"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+          )}
           <UsageBar stats={usageStats || getUsageStats(0)} />
 
           {viewingRecord ? (
@@ -3086,6 +3221,9 @@ export default function Marqad() {
           ) : viewingRecord ? (
             /* ===== Viewing mode: past session ===== */
             <div className="viewing-mode">
+              {viewingRecord.title && (
+                <div className="viewing-title">{viewingRecord.title}</div>
+              )}
               <div className="viewing-meta">
                 {new Date(viewingRecord.date).toLocaleString()} ·{" "}
                 {Math.round(viewingRecord.durationSec / 60)} min ·{" "}
@@ -3353,6 +3491,30 @@ export default function Marqad() {
             Stop
           </button>
         </div>
+      )}
+
+      {/* ===== Save Dialog — appears on recording stop ===== */}
+      {saveDialog?.show && (
+        <SaveDialog
+          defaultName={saveDialog.defaultName}
+          isBatch={saveDialog.isBatch}
+          onConfirm={confirmSaveSession}
+          onCancel={cancelSaveDialog}
+        />
+      )}
+
+      {/* ===== Settings Overlay — class periods management ===== */}
+      {settingsOpen && (
+        <SettingsOverlay
+          periods={periods}
+          newPeriod={newPeriod}
+          setNewPeriod={setNewPeriod}
+          periodError={periodError}
+          periodSaving={periodSaving}
+          onAdd={handleAddPeriod}
+          onDelete={handleDeletePeriod}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </div>
   );

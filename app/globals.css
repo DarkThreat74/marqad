@@ -1771,3 +1771,420 @@ html, body {
     font-size: 11px;
   }
 }
+
+/* ============================================================
+   Save Dialog — appears on recording stop
+   ============================================================ */
+
+.save-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fade-in 0.15s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.save-dialog {
+  background: var(--ink-raised);
+  border: 1px solid var(--ink-border-light);
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 420px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  animation: slide-up 0.2s ease;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.save-dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--paper);
+  margin-bottom: 4px;
+}
+
+.save-dialog-subtitle {
+  font-size: 13px;
+  color: var(--paper-muted);
+  margin-bottom: 16px;
+}
+
+.save-dialog-input {
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid var(--ink-border-light);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 15px;
+  color: var(--paper);
+  outline: none;
+  transition: border-color 0.15s ease;
+  box-sizing: border-box;
+}
+
+.save-dialog-input:focus {
+  border-color: var(--teal);
+}
+
+.save-dialog-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+.save-dialog-cancel {
+  background: transparent;
+  border: 1px solid var(--ink-border-light);
+  border-radius: 8px;
+  padding: 10px 20px;
+  font-size: 14px;
+  color: var(--paper-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.save-dialog-cancel:hover {
+  border-color: var(--paper-muted);
+  color: var(--paper);
+}
+
+.save-dialog-save {
+  background: var(--teal);
+  border: none;
+  border-radius: 8px;
+  padding: 10px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.save-dialog-save:hover {
+  background: var(--teal-dim);
+}
+
+/* ============================================================
+   Settings Gear Icon — in the control rail
+   ============================================================ */
+
+.settings-gear-btn {
+  background: transparent;
+  border: none;
+  color: var(--paper-muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.settings-gear-btn:hover {
+  color: var(--teal);
+  background: rgba(94, 234, 212, 0.08);
+}
+
+/* ============================================================
+   Settings Overlay — class periods management
+   ============================================================ */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fade-in 0.15s ease;
+}
+
+.settings-panel {
+  background: var(--ink-raised);
+  border: 1px solid var(--ink-border-light);
+  border-radius: 12px;
+  padding: 24px;
+  width: 90%;
+  max-width: 520px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  animation: slide-up 0.2s ease;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.settings-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--paper);
+}
+
+.settings-close {
+  background: transparent;
+  border: none;
+  color: var(--paper-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.settings-close:hover {
+  color: var(--paper);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-desc {
+  font-size: 13px;
+  color: var(--paper-muted);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+/* Periods list */
+.periods-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.periods-empty {
+  font-size: 13px;
+  color: var(--paper-faint);
+  text-align: center;
+  padding: 16px;
+}
+
+.period-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--ink);
+  border: 1px solid var(--ink-border);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.period-row:hover {
+  border-color: var(--ink-border-light);
+}
+
+.period-num {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--teal);
+  min-width: 28px;
+}
+
+.period-name {
+  font-size: 14px;
+  color: var(--paper);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.period-time {
+  font-size: 12px;
+  color: var(--paper-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.period-delete {
+  background: transparent;
+  border: none;
+  color: var(--paper-faint);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.period-delete:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+/* Add new period form */
+.period-add-section {
+  border-top: 1px solid var(--ink-border);
+  padding-top: 16px;
+}
+
+.period-add-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--paper);
+  margin-bottom: 10px;
+}
+
+.period-add-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.period-input {
+  background: var(--ink);
+  border: 1px solid var(--ink-border-light);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--paper);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.period-input:focus {
+  border-color: var(--teal);
+}
+
+.period-input-num {
+  width: 70px;
+}
+
+.period-input-name {
+  flex: 1;
+  min-width: 120px;
+}
+
+.period-input-time {
+  width: 90px;
+  font-variant-numeric: tabular-nums;
+}
+
+.period-time-sep {
+  color: var(--paper-muted);
+  font-size: 13px;
+}
+
+.period-add-btn {
+  background: var(--teal);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.period-add-btn:hover:not(:disabled) {
+  background: var(--teal-dim);
+}
+
+.period-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.period-error {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+/* ============================================================
+   Session title — in history panel + viewing mode
+   ============================================================ */
+
+.history-entry-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--teal);
+  margin-top: 2px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewing-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--paper);
+  margin-bottom: 6px;
+}
+
+/* ============================================================
+   Mobile responsive — save dialog + settings
+   ============================================================ */
+
+@media (max-width: 600px) {
+  .save-dialog {
+    padding: 20px;
+    width: 92%;
+  }
+
+  .save-dialog-title {
+    font-size: 16px;
+  }
+
+  .settings-panel {
+    padding: 20px;
+    width: 92%;
+    max-height: 90vh;
+  }
+
+  .period-add-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .period-input-num,
+  .period-input-name,
+  .period-input-time {
+    width: 100%;
+  }
+
+  .period-time-sep {
+    display: none;
+  }
+
+  .period-add-btn {
+    width: 100%;
+  }
+
+  .viewing-title {
+    font-size: 17px;
+  }
+}

@@ -41,6 +41,11 @@ export const CONFIG = {
     process.env.NEXT_PUBLIC_SUPABASE_URL
       ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/gemini-transcribe`
       : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/gemini-transcribe",
+  // Class periods endpoint — CRUD for automatic session naming
+  PERIODS_ENDPOINT:
+    process.env.NEXT_PUBLIC_SUPABASE_URL
+      ? `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/marqad-periods`
+      : "https://vnrgimvfsdgcpgfwcnlw.supabase.co/functions/v1/marqad-periods",
   // Exact model string confirmed against live docs (2026-07-16):
   // https://ai.google.dev/gemini-api/docs/models/gemini-3.1-pro-preview
   GEMINI_MODEL: "gemini-3.1-pro-preview",
@@ -812,6 +817,17 @@ export interface SessionRecord {
   aiReasoningAt?: string;           // ISO timestamp
   reconciledTranscript?: string;    // merged result, if run
   reconciledAt?: string;            // ISO timestamp
+  // Custom session title (from save dialog)
+  title?: string;
+}
+
+// ===== Class Periods — automatic session naming =====
+export interface ClassPeriod {
+  id?: number;
+  period_number: number;
+  class_name: string;
+  start_time: string;  // "HH:MM" (24-hour)
+  end_time: string;    // "HH:MM" (24-hour)
 }
 
 const HISTORY_KEY = "marqad-history";
@@ -899,6 +915,7 @@ export async function saveSessionToDB(record: SessionRecord): Promise<void> {
         ai_reasoning_at: record.aiReasoningAt || null,
         reconciled_transcript: record.reconciledTranscript || null,
         reconciled_at: record.reconciledAt || null,
+        title: record.title || null,
       }),
     });
     if (!resp.ok) {
@@ -935,6 +952,7 @@ export async function loadHistoryFromDB(): Promise<SessionRecord[]> {
       aiReasoningAt: s.ai_reasoning_at || undefined,
       reconciledTranscript: s.reconciled_transcript || undefined,
       reconciledAt: s.reconciled_at || undefined,
+      title: s.title || undefined,
     }));
   } catch (err) {
     // CRITICAL: re-throw instead of returning [].
@@ -956,6 +974,147 @@ export async function deleteSessionFromDB(id: string): Promise<void> {
   } catch (err) {
     console.warn("[Marqad] deleteSessionFromDB error:", err);
   }
+}
+
+// ============================================================
+// Class Periods — CRUD + session name generation
+// ============================================================
+
+const PERIODS_CACHE_KEY = "marqad_periods_cache";
+
+// Default periods — used as fallback if DB is unreachable
+const DEFAULT_PERIODS: ClassPeriod[] = [
+  { period_number: 1, class_name: "Mishkat 1", start_time: "07:30", end_time: "08:10" },
+  { period_number: 2, class_name: "Sharh al Wiqayah", start_time: "08:15", end_time: "08:55" },
+  { period_number: 3, class_name: "Hidayah 1", start_time: "09:00", end_time: "09:40" },
+  { period_number: 4, class_name: "Nur al Anwar", start_time: "09:55", end_time: "10:25" },
+  { period_number: 5, class_name: "Qiraat", start_time: "10:40", end_time: "11:20" },
+  { period_number: 6, class_name: "Iqtisad", start_time: "11:25", end_time: "12:05" },
+  { period_number: 7, class_name: "Jalalayan", start_time: "12:40", end_time: "13:20" },
+  { period_number: 8, class_name: "Hadith", start_time: "14:35", end_time: "15:15" },
+];
+
+// Load periods from cache (localStorage) — instant, offline-capable
+export function loadPeriodsCache(): ClassPeriod[] {
+  if (typeof window === "undefined") return DEFAULT_PERIODS;
+  try {
+    const raw = localStorage.getItem(PERIODS_CACHE_KEY);
+    if (!raw) return DEFAULT_PERIODS;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return DEFAULT_PERIODS;
+    return parsed;
+  } catch {
+    return DEFAULT_PERIODS;
+  }
+}
+
+// Load periods from DB (authoritative, cross-device)
+export async function loadPeriodsFromDB(): Promise<ClassPeriod[]> {
+  try {
+    const resp = await fetch(CONFIG.PERIODS_ENDPOINT, { method: "GET" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const periods: ClassPeriod[] = (data.periods || []).map((p: any) => ({
+      id: p.id,
+      period_number: p.period_number,
+      class_name: p.class_name,
+      start_time: p.start_time,
+      end_time: p.end_time,
+    }));
+    // Cache to localStorage
+    try { localStorage.setItem(PERIODS_CACHE_KEY, JSON.stringify(periods)); } catch {}
+    return periods;
+  } catch (err) {
+    console.warn("[Marqad] loadPeriodsFromDB error:", err);
+    throw err;
+  }
+}
+
+// Save (upsert) a period to the DB
+export async function savePeriodToDB(period: ClassPeriod): Promise<ClassPeriod | null> {
+  try {
+    const resp = await fetch(CONFIG.PERIODS_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(period),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    return data.period || null;
+  } catch (err) {
+    console.error("[Marqad] savePeriodToDB error:", err);
+    return null;
+  }
+}
+
+// Delete a period from the DB by id
+export async function deletePeriodFromDB(id: number): Promise<boolean> {
+  try {
+    const resp = await fetch(`${CONFIG.PERIODS_ENDPOINT}/${id}`, { method: "DELETE" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return true;
+  } catch (err) {
+    console.error("[Marqad] deletePeriodFromDB error:", err);
+    return false;
+  }
+}
+
+// Check if two time ranges overlap
+export function timesOverlap(
+  startA: string, endA: string,
+  startB: string, endB: string
+): boolean {
+  // Convert "HH:MM" to minutes since midnight
+  const toMin = (t: string) => {
+    const [h, m] = t.split(":").map(Number);
+    return h * 60 + m;
+  };
+  const sA = toMin(startA), eA = toMin(endA);
+  const sB = toMin(startB), eB = toMin(endB);
+  return sA < eB && sB < eA;
+}
+
+// Check if a new/edited period overlaps any existing period (excluding itself)
+export function findOverlap(
+  periods: ClassPeriod[],
+  newPeriod: ClassPeriod,
+  excludeId?: number
+): ClassPeriod | null {
+  for (const p of periods) {
+    if (excludeId && p.id === excludeId) continue;
+    if (timesOverlap(newPeriod.start_time, newPeriod.end_time, p.start_time, p.end_time)) {
+      return p;
+    }
+  }
+  return null;
+}
+
+// Generate a default session name based on the recording start time
+// and the configured class periods. Format: "Period 5 - Qiraat - July 17"
+// If no period matches: "Recording - July 17"
+export function generateSessionName(
+  startTime: Date,
+  periods: ClassPeriod[]
+): string {
+  const months = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"];
+  const dateStr = `${months[startTime.getMonth()]} ${startTime.getDate()}`;
+
+  // Convert recording start time to minutes since midnight
+  const recMinutes = startTime.getHours() * 60 + startTime.getMinutes();
+
+  // Find matching period
+  for (const p of periods) {
+    const [psH, psM] = p.start_time.split(":").map(Number);
+    const [peH, peM] = p.end_time.split(":").map(Number);
+    const psMin = psH * 60 + psM;
+    const peMin = peH * 60 + peM;
+    if (recMinutes >= psMin && recMinutes <= peMin) {
+      return `Period ${p.period_number} - ${p.class_name} - ${dateStr}`;
+    }
+  }
+
+  return `Recording - ${dateStr}`;
 }
 
 // ============================================================

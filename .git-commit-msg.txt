@@ -1,9 +1,16 @@
-Add clear error messages for missing/invalid Gemini API key
+feat: save dialog with auto-naming + class period settings
 
-- Edge function detects placeholder keys (your-key-from-ai.google.dev)
-  and returns a clear setup message with the correct command
-- Handles 401/403 (invalid key) and 429 (rate limit) with friendly messages
-- Client-side now shows the short friendly error first
+- Save dialog appears on recording stop with pre-filled default name
+- Default name generated from recording start time vs class periods
+- Format: "Period 5 - Qiraat - July 17" or "Recording - July 17"
+- User can edit name before saving or accept the default
+- Settings gear icon in rail opens class periods overlay
+- Add/delete periods with overlap validation (errors on conflict)
+- 8 default periods seeded (Mishkat 1 through Hadith)
+- New marqad_class_periods table + title column on marqad_sessions
+- New marqad-periods edge function for CRUD operations
+- Session titles shown in history panel + viewing mode
+- Works for both live and batch recording modes
 
 Generated with [Devin](https://devin.ai)
 
