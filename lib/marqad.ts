@@ -1018,8 +1018,9 @@ export async function loadPeriodsFromDB(): Promise<ClassPeriod[]> {
       id: p.id,
       period_number: p.period_number,
       class_name: p.class_name,
-      start_time: p.start_time,
-      end_time: p.end_time,
+      // Normalize "HH:MM:SS" (Postgres time) → "HH:MM"
+      start_time: normalizeTime(p.start_time),
+      end_time: normalizeTime(p.end_time),
     }));
     // Cache to localStorage
     try { localStorage.setItem(PERIODS_CACHE_KEY, JSON.stringify(periods)); } catch {}
@@ -1028,6 +1029,14 @@ export async function loadPeriodsFromDB(): Promise<ClassPeriod[]> {
     console.warn("[Marqad] loadPeriodsFromDB error:", err);
     throw err;
   }
+}
+
+// Normalize time strings — "07:30:00" → "07:30", "07:30" → "07:30"
+function normalizeTime(t: string): string {
+  if (!t) return t;
+  const parts = t.split(":");
+  if (parts.length >= 2) return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}`;
+  return t;
 }
 
 // Save (upsert) a period to the DB

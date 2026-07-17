@@ -1242,20 +1242,21 @@ export default function Marqad() {
         // This check must come BEFORE the give-up check so that a high
         // reconnect attempt count doesn't force-close a paused session.
         console.log("[Marqad] WebSocket closed during pause — will reconnect on resume");
-      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current < 10) {
-        // Progressive backoff: 2s, 3s, 5s, 8s, 12s, 16s, 20s, 25s, 30s, 35s
-        // More attempts than before — long sessions (45+ min) need resilience
-        const delays = [2000, 3000, 5000, 8000, 12000, 16000, 20000, 25000, 30000, 35000];
+      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current < 20) {
+        // Progressive backoff: 2s, 3s, 5s, 8s, 12s, 16s, 20s, 25s, 30s, 35s, 40s, 40s, 40s, 40s, 40s, 40s, 40s, 40s, 40s, 40s
+        // 20 attempts with capped backoff — long sessions (45+ min) need resilience
+        const delays = [2000, 3000, 5000, 8000, 12000, 16000, 20000, 25000, 30000, 35000,
+                        40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000, 40000];
         const delay = delays[reconnectAttemptsRef.current];
         reconnectAttemptsRef.current++;
-        setStatusText(`Reconnecting in ${delay / 1000}s... (attempt ${reconnectAttemptsRef.current}/10)`);
+        setStatusText(`Reconnecting in ${delay / 1000}s... (attempt ${reconnectAttemptsRef.current}/20)`);
         setStatusKind("connecting");
         reconnectTimerRef.current = setTimeout(() => {
           connectWebSocket();
         }, delay);
-      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 10) {
+      } else if (shouldReconnectRef.current && reconnectAttemptsRef.current >= 20) {
         const reason = event.reason ? `: ${event.reason}` : ` (code ${event.code})`;
-        setStatusText(`Connection lost after 10 attempts${reason}. Saving transcript...`);
+        setStatusText(`Connection lost after 20 attempts${reason}. Saving transcript...`);
         setStatusKind("error");
         setRecState("idle");
         shouldReconnectRef.current = false;
@@ -1673,40 +1674,33 @@ export default function Marqad() {
     stopLocalRecording().then(async (blob) => {
       // Now stop everything — timer, audio nodes, media stream
       teardown();
-      if (blob) setAudioBlob(blob);
-      // Auto-save whatever transcript we have so it's not lost
+      if (blob) {
+        setAudioBlob(blob);
+        pendingAudioBlobRef.current = blob;
+      }
+      // Show the save dialog with the proper default name — same as manual stop.
+      // This ensures the user can name their session even if the connection dropped.
       const currentSegments = segmentsRef.current;
       if (currentSegments.length > 0) {
         const sessionId = `session-${Date.now()}`;
-        const exportText = buildExportText(currentSegments);
-        const preview = currentSegments
-          .map((s) => s.transcript)
-          .join(" ")
-          .slice(0, 120);
-        const record: SessionRecord = {
-          id: sessionId,
-          date: new Date().toISOString(),
-          durationSec: sessionStreamingSecRef.current,
-          segmentCount: currentSegments.length,
-          preview: preview || "(empty session)",
-          exportText,
-        };
-        const updated = saveSession(record);
-        setHistory(updated);
-        saveSessionToDB(record).catch(() => {});
-        // Upload local recording if available
-        if (blob) {
-          const audioPath = await uploadAudioToStorage(sessionId, blob);
-          if (audioPath) {
-            saveSessionToDB({ ...record, audioPath, audioSize: blob.size }).catch(() => {});
-          }
-        }
+        const recordingStart = new Date(sessionStartRef.current);
+        const defaultName = generateSessionName(recordingStart, periods);
+        setSaveDialog({
+          show: true,
+          defaultName,
+          sessionData: {
+            sessionId,
+            segments: currentSegments,
+            streamingSec: sessionStreamingSecRef.current,
+          },
+          isBatch: false,
+        });
       }
     }).catch(() => {
       // If stopLocalRecording fails, still teardown to clean up resources
       teardown();
     });
-  }, [stopLocalRecording, teardown]);
+  }, [stopLocalRecording, teardown, periods]);
 
   // Keep the ref in sync so handleWsMessage can call it
   useEffect(() => {
